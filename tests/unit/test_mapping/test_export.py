@@ -107,9 +107,10 @@ class TestSavePng:
         img = Image.open(str(out))
         # PIL Image.size is (width, height)
         assert img.size == (TEST_CONFIG.grid_width, TEST_CONFIG.grid_height)
+        assert img.mode == "RGB"
 
-    def test_empty_grid_all_gray(self, tmp_path: Path) -> None:
-        """An empty grid (all unknown) produces an all-gray image."""
+    def test_empty_grid_all_blue(self, tmp_path: Path) -> None:
+        """An empty grid (all unknown) produces an all-blue image."""
         from PIL import Image
 
         g = OccupancyGrid(TEST_CONFIG)
@@ -118,4 +119,42 @@ class TestSavePng:
 
         img = Image.open(str(out))
         pixels = np.array(img)
-        assert np.all(pixels == 128)
+        # Unknown = blue (70, 130, 180)
+        assert np.all(pixels[:, :, 0] == 70)
+        assert np.all(pixels[:, :, 1] == 130)
+        assert np.all(pixels[:, :, 2] == 180)
+
+    def test_free_cells_are_white(self, grid: OccupancyGrid, tmp_path: Path) -> None:
+        """Free cells appear as white in the image."""
+        from PIL import Image
+
+        out = tmp_path / "map.png"
+        save_png(grid, out)
+
+        img = Image.open(str(out))
+        pixels = np.array(img)
+        # Grid has free cells at (5,5) — flipped in image
+        flipped_row = TEST_CONFIG.grid_height - 1 - 5
+        assert np.all(pixels[flipped_row, 5] == [255, 255, 255])
+
+    def test_occupied_cells_use_height_shading(self, tmp_path: Path) -> None:
+        """Occupied cells are shaded by height — taller is darker."""
+        from PIL import Image
+
+        g = OccupancyGrid(TEST_CONFIG)
+        # Two occupied cells at different heights
+        for _ in range(10):
+            g.update_occupied(2, 2, 1.0)  # short
+            g.update_occupied(4, 4, 3.0)  # tall
+
+        out = tmp_path / "height.png"
+        save_png(g, out)
+
+        img = Image.open(str(out))
+        pixels = np.array(img)
+        # Taller cell should be darker (lower intensity)
+        short_row = TEST_CONFIG.grid_height - 1 - 2
+        tall_row = TEST_CONFIG.grid_height - 1 - 4
+        short_intensity = pixels[short_row, 2, 0]
+        tall_intensity = pixels[tall_row, 4, 0]
+        assert tall_intensity < short_intensity
