@@ -1,8 +1,8 @@
 """Tests for Rangefinder sensor.
 
-Uses a FakeEngine stub — no MuJoCo needed. Tests verify ray direction
-generation, quaternion rotation, hit/miss classification, and scan
-result metadata.
+Uses FakeEngine from tests/conftest.py — no MuJoCo needed.
+Tests verify ray direction generation, quaternion rotation,
+hit/miss classification, and scan result metadata.
 """
 
 from __future__ import annotations
@@ -11,50 +11,13 @@ import math
 
 import numpy as np
 import pytest
-from numpy.typing import NDArray
 
 from swarm_mapping.perception.rangefinder import (
     Rangefinder,
     _rotate_vectors_by_quaternion,
 )
 from swarm_mapping.simulation.types import Pose, RayHit
-
-
-class FakeEngine:
-    """Minimal stub matching SimulationEngine's interface for tests."""
-
-    def __init__(
-        self,
-        pose: Pose,
-        ray_results: list[RayHit | None],
-        time: float = 0.0,
-    ) -> None:
-        self._pose = pose
-        self._ray_results = ray_results
-        self._time = time
-
-    def get_pose(self, drone_id: int) -> Pose:
-        """Return the fixed pose."""
-        return self._pose
-
-    def cast_rays(
-        self,
-        drone_id: int,
-        directions: NDArray[np.float64],
-    ) -> list[RayHit | None]:
-        """Return the pre-configured ray results."""
-        return self._ray_results
-
-    @property
-    def time(self) -> float:
-        """Return the fixed simulation time."""
-        return self._time
-
-
-IDENTITY_POSE = Pose(
-    position=np.array([0.0, 0.0, 1.0]),
-    quaternion=np.array([1.0, 0.0, 0.0, 0.0]),
-)
+from tests.conftest import IDENTITY_POSE, FakeEngine
 
 
 class TestRangefinder:
@@ -63,7 +26,7 @@ class TestRangefinder:
     def test_scan_returns_correct_observation_count(self) -> None:
         """Scan with num_rays=8 returns 8 observations."""
         num_rays = 8
-        hits = [None] * num_rays
+        hits: list[RayHit | None] = [None] * num_rays
         engine = FakeEngine(IDENTITY_POSE, hits)
         sensor = Rangefinder(engine, num_rays=num_rays)  # type: ignore[arg-type]
 
@@ -74,7 +37,7 @@ class TestRangefinder:
     def test_ray_directions_evenly_spaced(self) -> None:
         """With num_rays=4, directions are at 0, 90, 180, 270 degrees."""
         num_rays = 4
-        hits = [None] * num_rays
+        hits: list[RayHit | None] = [None] * num_rays
         engine = FakeEngine(IDENTITY_POSE, hits)
         sensor = Rangefinder(engine, num_rays=num_rays)  # type: ignore[arg-type]
 
@@ -83,7 +46,6 @@ class TestRangefinder:
         # With identity quaternion, body-frame == world-frame
         directions = np.array([obs.direction for obs in result.observations])
 
-        # Expected: +x, +y, -x, -y (starting from -180, stepping 90)
         # angular_range=2pi, start_angle=-pi, angles: -pi, -pi/2, 0, pi/2
         expected = np.array(
             [
@@ -149,13 +111,13 @@ class TestRangefinder:
         result = sensor.scan(42)
 
         assert result.drone_id == 42
-        np.testing.assert_allclose(result.pose.position, IDENTITY_POSE.position)
+        np.testing.assert_allclose(
+            result.pose.position, IDENTITY_POSE.position
+        )
         assert result.timestamp == pytest.approx(1.5)
 
     def test_directions_rotated_by_quaternion(self) -> None:
         """90-degree yaw rotation transforms +x to +y."""
-        # Quaternion for 90° rotation around z-axis:
-        # q = (cos(45°), 0, 0, sin(45°)) = (√2/2, 0, 0, √2/2)
         yaw_90 = Pose(
             position=np.array([0.0, 0.0, 1.0]),
             quaternion=np.array(
@@ -173,14 +135,14 @@ class TestRangefinder:
         result = sensor.scan(0)
         direction = result.observations[0].direction
 
-        # With 1 ray, body-frame direction is (0, 0, 0) at angle=-pi
+        # With 1 ray, body-frame direction is at angle=-pi
         # which is (-1, 0, 0). Rotated 90° around z → (0, -1, 0).
         expected = np.array([0.0, -1.0, 0.0])
         np.testing.assert_allclose(direction, expected, atol=1e-10)
 
     def test_default_parameters(self) -> None:
         """Default Rangefinder has 36 rays and 10m max range."""
-        hits = [None] * 36
+        hits: list[RayHit | None] = [None] * 36
         engine = FakeEngine(IDENTITY_POSE, hits)
         sensor = Rangefinder(engine)  # type: ignore[arg-type]
 
