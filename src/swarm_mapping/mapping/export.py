@@ -34,15 +34,14 @@ def save_npz(grid: OccupancyGrid, path: str | Path) -> None:
     )
 
 
-def save_png(grid: OccupancyGrid, path: str | Path) -> None:
+def save_png(grid: OccupancyGrid, path: str | Path, max_height: float = 3.0) -> None:
     """Save an RGB occupancy image with height-based shading.
 
     Color mapping:
         - Unknown (0.4 <= p <= 0.6): blue (70, 130, 180)
         - Free (p < 0.4): white (255, 255, 255)
         - Occupied (p > 0.6): grayscale intensity derived from
-          height — darker = taller. Uses the max observed height
-          in the grid as the reference ceiling.
+          height — darker = taller, relative to ``max_height``.
 
     The image origin is bottom-left (row 0 = bottom of image),
     matching the world coordinate convention.
@@ -50,6 +49,9 @@ def save_png(grid: OccupancyGrid, path: str | Path) -> None:
     Args:
         grid: The occupancy grid to save.
         path: Output file path (should end in .png).
+        max_height: Reference ceiling height in meters. Obstacles
+            at this height render as black; shorter obstacles are
+            lighter. Default 3.0 (typical indoor ceiling).
     """
     probs = grid.probability()
     heights = grid.height
@@ -67,16 +69,12 @@ def save_png(grid: OccupancyGrid, path: str | Path) -> None:
 
     # Occupied cells: height-based grayscale (dark = tall, light = short)
     occupied = probs > 0.6
-
-    # Find max observed height for normalization, avoiding -inf cells
-    finite_heights = heights[np.isfinite(heights)]
-    max_height = float(finite_heights.max()) if finite_heights.size > 0 else 1.0
-    max_height = max(max_height, 0.01)  # avoid division by zero
+    ref_height = max(max_height, 0.01)  # avoid division by zero
 
     # Normalize heights to [0, 1], then map to intensity [200, 0]
-    # (200 = short/light gray, 0 = tallest/black)
-    occ_heights = np.clip(heights[occupied], 0.0, max_height)
-    intensity = 200 - (occ_heights / max_height * 200).astype(np.uint8)
+    # (200 = short/light gray, 0 = at or above max_height/black)
+    occ_heights = np.clip(heights[occupied], 0.0, ref_height)
+    intensity = 200 - (occ_heights / ref_height * 200).astype(np.uint8)
     pixels[occupied, 0] = intensity
     pixels[occupied, 1] = intensity
     pixels[occupied, 2] = intensity

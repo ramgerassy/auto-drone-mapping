@@ -148,7 +148,7 @@ class TestSavePng:
             g.update_occupied(4, 4, 3.0)  # tall
 
         out = tmp_path / "height.png"
-        save_png(g, out)
+        save_png(g, out, max_height=3.0)
 
         img = Image.open(str(out))
         pixels = np.array(img)
@@ -158,3 +158,21 @@ class TestSavePng:
         short_intensity = pixels[short_row, 2, 0]
         tall_intensity = pixels[tall_row, 4, 0]
         assert tall_intensity < short_intensity
+
+    def test_short_obstacle_not_black_with_high_ceiling(self, tmp_path: Path) -> None:
+        """A 0.3m obstacle with max_height=3.0 should be light gray, not black."""
+        from PIL import Image
+
+        g = OccupancyGrid(TEST_CONFIG)
+        for _ in range(10):
+            g.update_occupied(3, 3, 0.3)
+
+        out = tmp_path / "short.png"
+        save_png(g, out, max_height=3.0)
+
+        img = Image.open(str(out))
+        pixels = np.array(img)
+        flipped_row = TEST_CONFIG.grid_height - 1 - 3
+        intensity = pixels[flipped_row, 3, 0]
+        # 0.3 / 3.0 = 10% of ceiling → intensity ~180 (light gray)
+        assert intensity > 150
