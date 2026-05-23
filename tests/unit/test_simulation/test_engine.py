@@ -21,8 +21,11 @@ SCENE_PATH = (
 
 @pytest.fixture
 def engine() -> SimulationEngine:
-    """Return a SimulationEngine loaded with the small indoor scene."""
-    return SimulationEngine(SCENE_PATH, {0: "drone_0"})
+    """Return a SimulationEngine with one drone at the room center."""
+    return SimulationEngine(
+        SCENE_PATH,
+        drone_positions={0: np.array([0.0, 0.0, 1.0])},
+    )
 
 
 class TestSimulationEngine:
@@ -34,7 +37,7 @@ class TestSimulationEngine:
         assert engine.data is not None
 
     def test_initial_drone_pose(self, engine: SimulationEngine) -> None:
-        """Drone starts at the position defined in MJCF."""
+        """Drone starts at the position specified in drone_positions."""
         pose = engine.get_pose(0)
         np.testing.assert_allclose(pose.position, [0.0, 0.0, 1.0])
 
@@ -111,3 +114,37 @@ class TestSimulationEngine:
 
         np.testing.assert_array_equal(pose_a.position, pose_b.position)
         np.testing.assert_array_equal(pose_a.quaternion, pose_b.quaternion)
+
+    def test_multiple_drones(self) -> None:
+        """Engine supports multiple drones with distinct positions."""
+        engine = SimulationEngine(
+            SCENE_PATH,
+            drone_positions={
+                0: np.array([0.0, 0.0, 1.0]),
+                1: np.array([5.0, 5.0, 1.0]),
+                2: np.array([-3.0, 2.0, 1.5]),
+            },
+        )
+
+        pose_0 = engine.get_pose(0)
+        pose_1 = engine.get_pose(1)
+        pose_2 = engine.get_pose(2)
+
+        np.testing.assert_allclose(pose_0.position, [0.0, 0.0, 1.0])
+        np.testing.assert_allclose(pose_1.position, [5.0, 5.0, 1.0])
+        np.testing.assert_allclose(pose_2.position, [-3.0, 2.0, 1.5])
+
+    def test_multiple_drones_independent_movement(self) -> None:
+        """Moving one drone doesn't affect the other."""
+        engine = SimulationEngine(
+            SCENE_PATH,
+            drone_positions={
+                0: np.array([0.0, 0.0, 1.0]),
+                1: np.array([5.0, 5.0, 1.0]),
+            },
+        )
+
+        engine.set_drone_position(0, np.array([2.0, 2.0, 1.0]))
+
+        pose_1 = engine.get_pose(1)
+        np.testing.assert_allclose(pose_1.position, [5.0, 5.0, 1.0])
