@@ -111,9 +111,7 @@ class TestRangefinder:
         result = sensor.scan(42)
 
         assert result.drone_id == 42
-        np.testing.assert_allclose(
-            result.pose.position, IDENTITY_POSE.position
-        )
+        np.testing.assert_allclose(result.pose.position, IDENTITY_POSE.position)
         assert result.timestamp == pytest.approx(1.5)
 
     def test_directions_rotated_by_quaternion(self) -> None:
