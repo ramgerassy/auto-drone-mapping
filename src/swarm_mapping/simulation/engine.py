@@ -34,9 +34,7 @@ class SimulationEngine:
         self._data = mujoco.MjData(self._model)
         self._drone_names = dict(drone_names)
 
-        self._localizer = GroundTruthLocalizer(
-            self._model, self._data, drone_names
-        )
+        self._localizer = GroundTruthLocalizer(self._model, self._data, drone_names)
         self._raycaster = MjRayCaster(self._model, self._data)
 
         # Cache joint info for position control
@@ -47,14 +45,9 @@ class SimulationEngine:
                 self._model, mujoco.mjtObj.mjOBJ_JOINT, joint_name
             )
             if joint_id == -1:
-                msg = (
-                    f"Joint '{joint_name}' for drone {drone_id} "
-                    f"not found in model"
-                )
+                msg = f"Joint '{joint_name}' for drone {drone_id} not found in model"
                 raise KeyError(msg)
-            self._joint_qpos_adr[drone_id] = int(
-                self._model.jnt_qposadr[joint_id]
-            )
+            self._joint_qpos_adr[drone_id] = int(self._model.jnt_qposadr[joint_id])
 
         # Store initial qpos for reset
         self._initial_qpos = self._data.qpos.copy()
@@ -143,9 +136,7 @@ class SimulationEngine:
         """
         pose = self._localizer.get_pose(drone_id)
         body_id = self._localizer.get_body_id(drone_id)
-        return self._raycaster.cast_rays(
-            pose.position, directions, body_id
-        )
+        return self._raycaster.cast_rays(pose.position, directions, body_id)
 
     def set_drone_position(
         self,

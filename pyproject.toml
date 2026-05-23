@@ -39,8 +39,9 @@ select = [
     "D",    # pydocstyle
 ]
 ignore = [
-    "D100",  # missing docstring in public module (we'll add these gradually)
+    "D100",  # missing docstring in public module (added gradually)
     "D104",  # missing docstring in public package
+    "D107",  # missing docstring in __init__ (args documented on class)
 ]
 
 [tool.ruff.lint.pydocstyle]
@@ -57,6 +58,10 @@ warn_unused_configs = true
 disallow_untyped_defs = true
 mypy_path = "src"
 packages = ["swarm_mapping"]
+
+[[tool.mypy.overrides]]
+module = "mujoco.*"
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

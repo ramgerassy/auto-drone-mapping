@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import mujoco
-import numpy as np
 
 from swarm_mapping.simulation.types import Pose
 
@@ -33,14 +32,9 @@ class GroundTruthLocalizer:
         self._body_ids: dict[int, int] = {}
 
         for drone_id, body_name in drone_body_names.items():
-            body_id = mujoco.mj_name2id(
-                model, mujoco.mjtObj.mjOBJ_BODY, body_name
-            )
+            body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, body_name)
             if body_id == -1:
-                msg = (
-                    f"Body '{body_name}' for drone {drone_id} "
-                    f"not found in model"
-                )
+                msg = f"Body '{body_name}' for drone {drone_id} not found in model"
                 raise KeyError(msg)
             self._body_ids[drone_id] = body_id
 

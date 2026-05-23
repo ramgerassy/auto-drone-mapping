@@ -49,9 +49,7 @@ class TestSimulationEngine:
         t1 = engine.time
         assert t1 == pytest.approx(t0 + engine.timestep)
 
-    def test_reset_restores_initial_state(
-        self, engine: SimulationEngine
-    ) -> None:
+    def test_reset_restores_initial_state(self, engine: SimulationEngine) -> None:
         """Reset returns drone to start position and zeros time."""
         engine.set_drone_position(0, np.array([5.0, 5.0, 2.0]))
         engine.step()
@@ -71,23 +69,21 @@ class TestSimulationEngine:
         pose = engine.get_pose(0)
         np.testing.assert_allclose(pose.position, target)
 
-    def test_set_drone_position_unknown_id(
-        self, engine: SimulationEngine
-    ) -> None:
+    def test_set_drone_position_unknown_id(self, engine: SimulationEngine) -> None:
         """Setting position for unknown drone_id raises KeyError."""
         with pytest.raises(KeyError, match="Unknown drone_id"):
             engine.set_drone_position(99, np.array([0.0, 0.0, 1.0]))
 
-    def test_cast_rays_from_drone(
-        self, engine: SimulationEngine
-    ) -> None:
+    def test_cast_rays_from_drone(self, engine: SimulationEngine) -> None:
         """Rays from drone hit walls at expected distances."""
-        directions = np.array([
-            [1.0, 0.0, 0.0],   # east wall at ~10m
-            [-1.0, 0.0, 0.0],  # west wall at ~10m
-            [0.0, 1.0, 0.0],   # north wall at ~10m
-            [0.0, -1.0, 0.0],  # south wall at ~10m
-        ])
+        directions = np.array(
+            [
+                [1.0, 0.0, 0.0],  # east wall at ~10m
+                [-1.0, 0.0, 0.0],  # west wall at ~10m
+                [0.0, 1.0, 0.0],  # north wall at ~10m
+                [0.0, -1.0, 0.0],  # south wall at ~10m
+            ]
+        )
 
         results = engine.cast_rays(0, directions)
 

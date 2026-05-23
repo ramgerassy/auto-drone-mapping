@@ -16,9 +16,7 @@ class TestGroundTruthLocalizer:
         self, mj_model: mujoco.MjModel, mj_data: mujoco.MjData
     ) -> None:
         """Drone pose matches the position defined in MJCF."""
-        localizer = GroundTruthLocalizer(
-            mj_model, mj_data, {0: "drone_0"}
-        )
+        localizer = GroundTruthLocalizer(mj_model, mj_data, {0: "drone_0"})
         pose = localizer.get_pose(0)
 
         np.testing.assert_allclose(pose.position, [0.0, 0.0, 1.0])
@@ -28,9 +26,7 @@ class TestGroundTruthLocalizer:
         self, mj_model: mujoco.MjModel, mj_data: mujoco.MjData
     ) -> None:
         """Pose reflects manual changes to qpos after mj_forward."""
-        localizer = GroundTruthLocalizer(
-            mj_model, mj_data, {0: "drone_0"}
-        )
+        localizer = GroundTruthLocalizer(mj_model, mj_data, {0: "drone_0"})
 
         joint_id = mujoco.mj_name2id(
             mj_model, mujoco.mjtObj.mjOBJ_JOINT, "drone_0_joint"
@@ -46,9 +42,7 @@ class TestGroundTruthLocalizer:
         self, mj_model: mujoco.MjModel, mj_data: mujoco.MjData
     ) -> None:
         """Returned pose arrays are copies, not views into MuJoCo data."""
-        localizer = GroundTruthLocalizer(
-            mj_model, mj_data, {0: "drone_0"}
-        )
+        localizer = GroundTruthLocalizer(mj_model, mj_data, {0: "drone_0"})
         pose = localizer.get_pose(0)
         pose.position[0] = 999.0  # type: ignore[index]
 
@@ -59,9 +53,7 @@ class TestGroundTruthLocalizer:
         self, mj_model: mujoco.MjModel, mj_data: mujoco.MjData
     ) -> None:
         """Requesting a pose for an unknown drone_id raises KeyError."""
-        localizer = GroundTruthLocalizer(
-            mj_model, mj_data, {0: "drone_0"}
-        )
+        localizer = GroundTruthLocalizer(mj_model, mj_data, {0: "drone_0"})
         with pytest.raises(KeyError, match="Unknown drone_id: 99"):
             localizer.get_pose(99)
 
@@ -70,6 +62,4 @@ class TestGroundTruthLocalizer:
     ) -> None:
         """Constructing with an invalid body name raises KeyError."""
         with pytest.raises(KeyError, match="not found in model"):
-            GroundTruthLocalizer(
-                mj_model, mj_data, {0: "nonexistent_body"}
-            )
+            GroundTruthLocalizer(mj_model, mj_data, {0: "nonexistent_body"})

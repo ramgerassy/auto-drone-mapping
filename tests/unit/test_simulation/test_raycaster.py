@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import mujoco
 import numpy as np
-import pytest
 
 from swarm_mapping.simulation.raycaster import MjRayCaster
 
@@ -21,9 +20,7 @@ class TestMjRayCaster:
         0.1, so inner face is at x=2.9. Expected distance ~2.9.
         """
         caster = MjRayCaster(mj_model, mj_data)
-        drone_body_id = mujoco.mj_name2id(
-            mj_model, mujoco.mjtObj.mjOBJ_BODY, "drone_0"
-        )
+        drone_body_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, "drone_0")
         origin = mj_data.xpos[drone_body_id].copy()
         directions = np.array([[1.0, 0.0, 0.0]])
 
@@ -45,9 +42,7 @@ class TestMjRayCaster:
         A ray aimed at (1, 1, 0.5) should hit the obstacle.
         """
         caster = MjRayCaster(mj_model, mj_data)
-        drone_body_id = mujoco.mj_name2id(
-            mj_model, mujoco.mjtObj.mjOBJ_BODY, "drone_0"
-        )
+        drone_body_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, "drone_0")
         origin = mj_data.xpos[drone_body_id].copy()
 
         # Direction toward obstacle center
@@ -69,16 +64,16 @@ class TestMjRayCaster:
     ) -> None:
         """Casting multiple rays returns correct number of results."""
         caster = MjRayCaster(mj_model, mj_data)
-        drone_body_id = mujoco.mj_name2id(
-            mj_model, mujoco.mjtObj.mjOBJ_BODY, "drone_0"
-        )
+        drone_body_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, "drone_0")
         origin = mj_data.xpos[drone_body_id].copy()
-        directions = np.array([
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-            [-1.0, 0.0, 0.0],
-            [0.0, -1.0, 0.0],
-        ])
+        directions = np.array(
+            [
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [-1.0, 0.0, 0.0],
+                [0.0, -1.0, 0.0],
+            ]
+        )
 
         results = caster.cast_rays(origin, directions, drone_body_id)
 
@@ -93,9 +88,7 @@ class TestMjRayCaster:
     ) -> None:
         """Rays originating from the drone don't hit the drone's own geom."""
         caster = MjRayCaster(mj_model, mj_data)
-        drone_body_id = mujoco.mj_name2id(
-            mj_model, mujoco.mjtObj.mjOBJ_BODY, "drone_0"
-        )
+        drone_body_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, "drone_0")
         drone_geom_id = mujoco.mj_name2id(
             mj_model, mujoco.mjtObj.mjOBJ_GEOM, "drone_0_body"
         )
@@ -113,9 +106,7 @@ class TestMjRayCaster:
     ) -> None:
         """Hit point equals origin + direction * distance."""
         caster = MjRayCaster(mj_model, mj_data)
-        drone_body_id = mujoco.mj_name2id(
-            mj_model, mujoco.mjtObj.mjOBJ_BODY, "drone_0"
-        )
+        drone_body_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, "drone_0")
         origin = mj_data.xpos[drone_body_id].copy()
         direction = np.array([1.0, 0.0, 0.0])
         directions = direction.reshape(1, 3)
