@@ -85,12 +85,14 @@ class TestRangefinder:
 
         # Expected: +x, +y, -x, -y (starting from -180, stepping 90)
         # angular_range=2pi, start_angle=-pi, angles: -pi, -pi/2, 0, pi/2
-        expected = np.array([
-            [-1.0, 0.0, 0.0],  # -180°
-            [0.0, -1.0, 0.0],  # -90°
-            [1.0, 0.0, 0.0],  # 0°
-            [0.0, 1.0, 0.0],  # 90°
-        ])
+        expected = np.array(
+            [
+                [-1.0, 0.0, 0.0],  # -180°
+                [0.0, -1.0, 0.0],  # -90°
+                [1.0, 0.0, 0.0],  # 0°
+                [0.0, 1.0, 0.0],  # 90°
+            ]
+        )
         np.testing.assert_allclose(directions, expected, atol=1e-10)
 
     def test_hit_observation_has_distance_and_point(self) -> None:
@@ -127,7 +129,9 @@ class TestRangefinder:
         )
         engine = FakeEngine(IDENTITY_POSE, [far_hit])
         sensor = Rangefinder(
-            engine, num_rays=1, max_range=10.0  # type: ignore[arg-type]
+            engine,
+            num_rays=1,
+            max_range=10.0,  # type: ignore[arg-type]
         )
 
         result = sensor.scan(0)
@@ -145,9 +149,7 @@ class TestRangefinder:
         result = sensor.scan(42)
 
         assert result.drone_id == 42
-        np.testing.assert_allclose(
-            result.pose.position, IDENTITY_POSE.position
-        )
+        np.testing.assert_allclose(result.pose.position, IDENTITY_POSE.position)
         assert result.timestamp == pytest.approx(1.5)
 
     def test_directions_rotated_by_quaternion(self) -> None:
@@ -156,12 +158,14 @@ class TestRangefinder:
         # q = (cos(45°), 0, 0, sin(45°)) = (√2/2, 0, 0, √2/2)
         yaw_90 = Pose(
             position=np.array([0.0, 0.0, 1.0]),
-            quaternion=np.array([
-                math.sqrt(2) / 2,
-                0.0,
-                0.0,
-                math.sqrt(2) / 2,
-            ]),
+            quaternion=np.array(
+                [
+                    math.sqrt(2) / 2,
+                    0.0,
+                    0.0,
+                    math.sqrt(2) / 2,
+                ]
+            ),
         )
         engine = FakeEngine(yaw_90, [None])
         sensor = Rangefinder(engine, num_rays=1)  # type: ignore[arg-type]

@@ -38,11 +38,13 @@ def _rotate_vectors_by_quaternion(
     r21 = 2 * (y * z + w * x)
     r22 = 1 - 2 * (x * x + y * y)
 
-    rotation_matrix = np.array([
-        [r00, r01, r02],
-        [r10, r11, r12],
-        [r20, r21, r22],
-    ])
+    rotation_matrix = np.array(
+        [
+            [r00, r01, r02],
+            [r10, r11, r12],
+            [r20, r21, r22],
+        ]
+    )
 
     return (rotation_matrix @ vectors.T).T
 
