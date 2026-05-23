@@ -1,0 +1,27 @@
+# Small indoor scenario — 20m x 20m room, single drone.
+# Sprint 1: hardcoded patrol path, no planning module.
+
+scene:
+  # Path relative to src/swarm_mapping/simulation/assets/
+  path: small_indoor.xml
+
+drone:
+  start_position: [0.0, 0.0, 1.0]
+
+sensor:
+  num_rays: 72        # 5-degree spacing
+  max_range: 12.0     # meters
+
+map:
+  resolution: 0.1     # meters per cell
+  origin_x: -10.0     # grid covers -10 to +10 in x
+  origin_y: -10.0     # grid covers -10 to +10 in y
+  grid_width: 200     # 20m / 0.1m
+  grid_height: 200
+  max_height: 3.0     # ceiling height for PNG shading
+
+patrol:
+  spacing: 2.0        # meters between waypoints
+  altitude: 1.0       # flight height
+  x_range: [-8, 8]    # patrol bounds (inside walls)
+  y_range: [-8, 8]
