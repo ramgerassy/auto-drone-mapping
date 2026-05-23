@@ -1,0 +1,62 @@
+<!--
+  Small indoor scenario: 20m x 20m room, 3m ceiling.
+
+  Coordinate system: room center is at (0, 0, 0).
+  Walls extend from x/y = -10 to +10, height 0 to 3.
+  Drone starts at (0, 0, 1) — 1m above ground.
+
+  Box geom sizes are half-extents:
+    size="10 10 0.05"  → 20m x 20m x 0.1m thick floor
+    size="0.1 10 1.5"  → 0.2m thick, 20m long, 3m tall wall
+-->
+<mujoco model="small_indoor">
+  <option timestep="0.01" gravity="0 0 -9.81"/>
+
+  <worldbody>
+    <!-- Floor -->
+    <geom name="floor" type="plane" size="10 10 0.05"
+          rgba="0.9 0.9 0.9 1.0"/>
+
+    <!-- Ceiling -->
+    <geom name="ceiling" type="box" pos="0 0 3.0" size="10 10 0.05"
+          rgba="0.95 0.95 0.95 1.0"/>
+
+    <!-- Walls -->
+    <geom name="wall_east" type="box" pos="10 0 1.5" size="0.1 10 1.5"
+          rgba="0.7 0.7 0.7 1.0"/>
+    <geom name="wall_west" type="box" pos="-10 0 1.5" size="0.1 10 1.5"
+          rgba="0.7 0.7 0.7 1.0"/>
+    <geom name="wall_north" type="box" pos="0 10 1.5" size="10 0.1 1.5"
+          rgba="0.7 0.7 0.7 1.0"/>
+    <geom name="wall_south" type="box" pos="0 -10 1.5" size="10 0.1 1.5"
+          rgba="0.7 0.7 0.7 1.0"/>
+
+    <!-- Obstacles -->
+    <geom name="obstacle_1" type="box" pos="3 3 0.5" size="1.0 0.5 0.5"
+          rgba="0.8 0.4 0.2 1.0"/>
+    <geom name="obstacle_2" type="box" pos="-4 2 0.75" size="0.5 1.5 0.75"
+          rgba="0.8 0.4 0.2 1.0"/>
+    <geom name="obstacle_3" type="box" pos="5 -6 0.4" size="0.8 0.8 0.4"
+          rgba="0.8 0.4 0.2 1.0"/>
+
+    <!-- Drone: box body with freejoint, visual-only rotors.
+         Rotors have contype=0 conaffinity=0 so they don't collide. -->
+    <body name="drone_0" pos="0 0 1">
+      <freejoint name="drone_0_joint"/>
+      <geom name="drone_0_body" type="box" size="0.15 0.15 0.05"
+            mass="0.5" rgba="0.2 0.6 1.0 1.0"/>
+      <geom name="drone_0_rotor_fl" type="cylinder" size="0.08 0.01"
+            pos="0.15 0.15 0.05" rgba="0.3 0.3 0.3 0.5"
+            contype="0" conaffinity="0"/>
+      <geom name="drone_0_rotor_fr" type="cylinder" size="0.08 0.01"
+            pos="0.15 -0.15 0.05" rgba="0.3 0.3 0.3 0.5"
+            contype="0" conaffinity="0"/>
+      <geom name="drone_0_rotor_bl" type="cylinder" size="0.08 0.01"
+            pos="-0.15 0.15 0.05" rgba="0.3 0.3 0.3 0.5"
+            contype="0" conaffinity="0"/>
+      <geom name="drone_0_rotor_br" type="cylinder" size="0.08 0.01"
+            pos="-0.15 -0.15 0.05" rgba="0.3 0.3 0.3 0.5"
+            contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+</mujoco>

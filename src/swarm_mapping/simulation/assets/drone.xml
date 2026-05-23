@@ -1,0 +1,24 @@
+<!-- Minimal quadrotor drone body for Sprint 1.
+
+     Uses a freejoint for unconstrained 6-DOF motion.
+     Movement is position-controlled (teleport) for the POC —
+     no rotor physics or actuators yet.
+
+     The freejoint gives 7 qpos values (3 position + 4 quaternion)
+     and 6 qvel values (3 linear velocity + 3 angular velocity).
+-->
+<body name="drone_0" pos="0 0 1">
+  <freejoint name="drone_0_joint"/>
+  <!-- Central body -->
+  <geom name="drone_0_body" type="box" size="0.15 0.15 0.05"
+        mass="0.5" rgba="0.2 0.6 1.0 1.0"/>
+  <!-- Visual-only rotors (no actuators for POC) -->
+  <geom name="drone_0_rotor_fl" type="cylinder" size="0.08 0.01"
+        pos="0.15 0.15 0.05" rgba="0.3 0.3 0.3 0.5" contype="0" conaffinity="0"/>
+  <geom name="drone_0_rotor_fr" type="cylinder" size="0.08 0.01"
+        pos="0.15 -0.15 0.05" rgba="0.3 0.3 0.3 0.5" contype="0" conaffinity="0"/>
+  <geom name="drone_0_rotor_bl" type="cylinder" size="0.08 0.01"
+        pos="-0.15 0.15 0.05" rgba="0.3 0.3 0.3 0.5" contype="0" conaffinity="0"/>
+  <geom name="drone_0_rotor_br" type="cylinder" size="0.08 0.01"
+        pos="-0.15 -0.15 0.05" rgba="0.3 0.3 0.3 0.5" contype="0" conaffinity="0"/>
+</body>
