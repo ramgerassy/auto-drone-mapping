@@ -1,7 +1,72 @@
 [project]
 name = "auto-drone-mapping"
 version = "0.1.0"
-description = "Add your description here"
+description = "Cooperative drone swarm for autonomous exploration and 2.5D mapping in MuJoCo"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "mujoco>=3.2.0",
+    "numpy>=2.0.0",
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+swarm-mapping = "swarm_mapping.cli:main"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.11.0",
+    "mypy>=1.15.0",
+    "pytest>=8.0.0",
+    "pytest-cov>=6.0.0",
+    "pre-commit>=4.0.0",
+]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 88
+src = ["src"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "SIM",  # flake8-simplify
+    "D",    # pydocstyle
+]
+ignore = [
+    "D100",  # missing docstring in public module (we'll add these gradually)
+    "D104",  # missing docstring in public package
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.isort]
+known-first-party = ["swarm_mapping"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+mypy_path = "src"
+packages = ["swarm_mapping"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/swarm_mapping"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
