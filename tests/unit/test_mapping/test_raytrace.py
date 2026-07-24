@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import pytest
+
 from swarm_mapping.mapping.raytrace import bresenham_2d
+
+pytestmark = pytest.mark.sprint(1)  # tests introduced in Sprint 1
 
 
 class TestBresenham2D:
@@ -18,6 +22,7 @@ class TestBresenham2D:
         cells = bresenham_2d(0, 0, 0, 4)
         assert cells == [(0, 0), (0, 1), (0, 2), (0, 3), (0, 4)]
 
+    @pytest.mark.sanity
     def test_diagonal_line(self) -> None:
         """45-degree diagonal visits cells along both axes."""
         cells = bresenham_2d(0, 0, 3, 3)

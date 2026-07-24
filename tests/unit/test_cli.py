@@ -7,10 +7,14 @@ display and is exercised manually / via the integration run, not in CI.
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from swarm_mapping.cli import interpolate_segment
 
+pytestmark = pytest.mark.sprint(1)  # tests introduced in Sprint 1
 
+
+@pytest.mark.sanity
 def test_interpolate_segment_ends_at_target() -> None:
     """The final emitted point must equal the target exactly."""
     start = np.array([0.0, 0.0, 1.0])

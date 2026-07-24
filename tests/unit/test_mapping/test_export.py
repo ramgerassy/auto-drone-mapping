@@ -11,6 +11,8 @@ from swarm_mapping.mapping.export import save_npz, save_png
 from swarm_mapping.mapping.grid import OccupancyGrid
 from swarm_mapping.mapping.types import MapConfig
 
+pytestmark = pytest.mark.sprint(1)  # tests introduced in Sprint 1
+
 TEST_CONFIG = MapConfig(
     resolution=0.5,
     origin_x=-2.0,

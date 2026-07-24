@@ -13,6 +13,50 @@ from numpy.typing import NDArray
 
 from swarm_mapping.simulation.types import Pose, RayHit
 
+# --- Sprint-derived test classification -------------------------------------
+#
+# Every test declares the sprint it was introduced in via
+# ``pytestmark = pytest.mark.sprint(N)`` at the top of its module. From that
+# single tag we derive two selectable groups, so promotion is automatic:
+#
+#   * regression  — tests from sprints BEFORE the current one. They guard
+#                   already-shipped behaviour and must not break (PR gate).
+#   * progression — tests from the CURRENT sprint; the work in flight
+#                   (per-commit gate).
+#
+# When a sprint closes, bump CURRENT_SPRINT by one: last sprint's progression
+# tests become regression with no re-tagging. ``sanity`` is an independent,
+# hand-curated marker for a small/fast health-check subset.
+#
+# Run: ``pytest -m sanity`` / ``-m progression`` / ``-m regression``.
+CURRENT_SPRINT = 1
+
+
+def pytest_collection_modifyitems(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
+    """Tag each test as regression or progression based on its sprint marker."""
+    unmarked: list[str] = []
+    for item in items:
+        marker = item.get_closest_marker("sprint")
+        if marker is None or not marker.args:
+            unmarked.append(item.nodeid)
+            continue
+        sprint = marker.args[0]
+        if sprint < CURRENT_SPRINT:
+            item.add_marker(pytest.mark.regression)
+        else:
+            item.add_marker(pytest.mark.progression)
+
+    if unmarked:
+        import warnings
+
+        warnings.warn(
+            "Tests without a sprint(N) marker are neither regression nor "
+            "progression and escape both gates: " + ", ".join(unmarked),
+            stacklevel=1,
+        )
+
 
 class FakeEngine:
     """Lightweight stub matching SimulationEngine's public interface.

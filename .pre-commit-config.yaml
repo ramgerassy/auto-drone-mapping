@@ -13,3 +13,15 @@ repos:
       - id: ruff
         args: [--fix]
       - id: ruff-format
+
+  # Per-commit gate: regression suite (prior sprints, must not break) plus the
+  # fast sanity smoke. `or sanity` keeps the selection non-empty while
+  # regression is empty (Sprint 1). Runs only when Python files are staged.
+  - repo: local
+    hooks:
+      - id: regression-tests
+        name: regression + sanity tests
+        entry: uv run pytest -m "regression or sanity" -q
+        language: system
+        types: [python]
+        pass_filenames: false

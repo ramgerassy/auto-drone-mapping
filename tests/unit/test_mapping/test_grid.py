@@ -8,6 +8,8 @@ import pytest
 from swarm_mapping.mapping.grid import OccupancyGrid
 from swarm_mapping.mapping.types import MapConfig
 
+pytestmark = pytest.mark.sprint(1)  # tests introduced in Sprint 1
+
 
 @pytest.fixture
 def config() -> MapConfig:
@@ -47,6 +49,7 @@ class TestCoordinateTransforms:
         col, row = grid.world_to_grid(0.5, 0.5)
         assert (col, row) == (0, 0)
 
+    @pytest.mark.sanity
     def test_world_to_grid_known_point(self, grid: OccupancyGrid) -> None:
         """Known world point maps to expected cell."""
         col, row = grid.world_to_grid(3.5, 7.2)

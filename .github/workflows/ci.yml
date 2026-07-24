@@ -32,5 +32,14 @@ jobs:
       - name: Mypy
         run: uv run mypy src/
 
-      - name: Tests
-        run: uv run pytest --cov=swarm_mapping --cov-report=term-missing -v
+      # Per-commit gate: the accumulated must-not-break suite (+ fast sanity).
+      # Empty until Sprint 2 ships, so `or sanity` keeps it from erroring on an
+      # empty selection and always runs the quick cross-module smoke.
+      - name: Regression + sanity (every push)
+        if: github.event_name == 'push'
+        run: uv run pytest -m "regression or sanity" --cov=swarm_mapping --cov-report=term-missing -v
+
+      # PR-to-main gate: the current sprint's work (+ sanity).
+      - name: Progression + sanity (pull request)
+        if: github.event_name == 'pull_request'
+        run: uv run pytest -m "progression or sanity" --cov=swarm_mapping --cov-report=term-missing -v

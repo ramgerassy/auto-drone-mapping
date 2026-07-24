@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import mujoco
 import numpy as np
+import pytest
 
 from swarm_mapping.simulation.raycaster import MjRayCaster
+
+pytestmark = pytest.mark.sprint(1)  # tests introduced in Sprint 1
 
 
 class TestMjRayCaster:

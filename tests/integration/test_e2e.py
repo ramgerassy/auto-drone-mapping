@@ -9,8 +9,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from swarm_mapping.cli import generate_patrol, run_pipeline
+
+pytestmark = pytest.mark.sprint(1)  # tests introduced in Sprint 1
 
 SCENARIO_CONFIG = (
     Path(__file__).resolve().parents[2] / "scenarios" / "small_indoor" / "config.yaml"

@@ -19,6 +19,8 @@ from swarm_mapping.perception.rangefinder import (
 from swarm_mapping.simulation.types import Pose, RayHit
 from tests.conftest import IDENTITY_POSE, FakeEngine
 
+pytestmark = pytest.mark.sprint(1)  # tests introduced in Sprint 1
+
 
 class TestRangefinder:
     """Tests for the Rangefinder sensor."""
@@ -57,6 +59,7 @@ class TestRangefinder:
         )
         np.testing.assert_allclose(directions, expected, atol=1e-10)
 
+    @pytest.mark.sanity
     def test_hit_observation_has_distance_and_point(self) -> None:
         """A ray that hits returns distance and hit_point."""
         hit_point = np.array([2.0, 0.0, 1.0])
