@@ -1,7 +1,11 @@
 # Feature 1 — Frontier detection (`mapping.get_frontiers()`)
 
 Branch: `feat/frontier-detection` (off `sprint-2`)
-Status: **planning — one decision pending (clustering algorithm)**
+Status: **decided — implementing (tests first)**
+
+> **Clustering decision (resolved):** Option **A — hand-written BFS
+> connected-components**, **8-connectivity** for clustering, `min_region_size = 2`.
+> No new dependency; deterministic by construction.
 
 ## Goal
 
