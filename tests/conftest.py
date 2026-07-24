@@ -29,7 +29,7 @@ from swarm_mapping.simulation.types import Pose, RayHit
 # hand-curated marker for a small/fast health-check subset.
 #
 # Run: ``pytest -m sanity`` / ``-m progression`` / ``-m regression``.
-CURRENT_SPRINT = 1
+CURRENT_SPRINT = 2
 
 
 def pytest_collection_modifyitems(
