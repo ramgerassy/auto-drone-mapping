@@ -16,3 +16,4 @@ htmlcov/
 
 # IDE / tool config
 .claude/
+output/
