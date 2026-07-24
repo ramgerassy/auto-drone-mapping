@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from swarm_mapping.mapping.frontier import FrontierRegion, detect_frontiers
 from swarm_mapping.mapping.grid import OccupancyGrid
 from swarm_mapping.mapping.raytrace import bresenham_2d
 from swarm_mapping.mapping.types import MapConfig
@@ -35,6 +36,18 @@ class Mapper:
         """
         for obs in scan.observations:
             self._integrate_observation(obs)
+
+    def get_frontiers(self) -> list[FrontierRegion]:
+        """Detect frontier regions in the current map.
+
+        Frontiers are the boundary between known-free and unknown space —
+        the exploration targets consumed by the planning module.
+
+        Returns:
+            Frontier regions, sorted deterministically. Empty when the
+            reachable space is fully explored.
+        """
+        return detect_frontiers(self._grid)
 
     def _integrate_observation(self, obs: RayObservation) -> None:
         """Integrate a single ray observation into the grid.
