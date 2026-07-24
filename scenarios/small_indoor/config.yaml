@@ -9,8 +9,15 @@ drone:
   start_position: [0.0, 0.0, 1.0]
 
 sensor:
-  num_rays: 72        # 5-degree spacing
-  max_range: 12.0     # meters
+  # Models one Slamtec RPLIDAR A2M8: a 360-degree 2D scanning LiDAR rated to
+  # 16 m, native angular resolution ~0.45-0.9 deg (400-800 samples/rev).
+  # num_rays is that single sensor's angular samples per scan — NOT a count of
+  # physical sensors — so 72 (5 deg) is conservative for this unit.
+  # Scope: only the measurement geometry (range + angular resolution) is
+  # modeled; sensor mass, motor power draw, and spin dynamics are out of scope.
+  num_rays: 72        # 5-degree spacing around the horizontal plane
+  max_range: 12.0     # meters — operational cap ~25% below the 16 m rating, so
+                      # returns stay out of the unreliable near-max zone
 
 map:
   resolution: 0.1     # meters per cell
@@ -22,6 +29,7 @@ map:
 
 patrol:
   spacing: 2.0        # meters between waypoints
-  altitude: 1.0       # flight height
+  altitude: 1.0       # flight height in meters above the floor (floor plane at
+                      # z=0), i.e. the drone flies 1.0 m off the ground
   x_range: [-8, 8]    # patrol bounds (inside walls)
   y_range: [-8, 8]
