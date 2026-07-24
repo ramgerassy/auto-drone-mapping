@@ -9,6 +9,8 @@ import pytest
 
 from swarm_mapping.simulation.engine import SimulationEngine
 
+pytestmark = pytest.mark.sprint(1)  # tests introduced in Sprint 1
+
 SCENE_PATH = (
     Path(__file__).resolve().parents[3]
     / "src"

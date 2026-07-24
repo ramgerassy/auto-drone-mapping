@@ -10,6 +10,8 @@ from swarm_mapping.mapping.types import MapConfig
 from swarm_mapping.perception.types import RayObservation, ScanResult
 from swarm_mapping.simulation.types import Pose
 
+pytestmark = pytest.mark.sprint(1)  # tests introduced in Sprint 1
+
 # Shared config: 10x10 grid, 1m resolution, origin at (0, 0)
 TEST_CONFIG = MapConfig(
     resolution=1.0,
@@ -38,6 +40,7 @@ def _make_scan(observations: list[RayObservation]) -> ScanResult:
 class TestMapper:
     """Tests for Mapper."""
 
+    @pytest.mark.sanity
     def test_single_hit_marks_free_and_occupied(self) -> None:
         """A hit ray marks cells along path as free and endpoint as occupied."""
         mapper = Mapper(TEST_CONFIG)

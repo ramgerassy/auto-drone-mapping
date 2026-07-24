@@ -66,8 +66,13 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "--strict-markers"
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "sprint(n): sprint the test was introduced in; drives the regression/progression split (see tests/conftest.py)",
+    "regression: derived from sprint(n) — prior-sprint tests that must not break (PR gate)",
+    "progression: derived from sprint(n) — current-sprint tests (per-commit gate)",
+    "sanity: fast, minimal cross-module health check; keep it small and quick",
 ]
 
 [tool.hatch.build.targets.wheel]

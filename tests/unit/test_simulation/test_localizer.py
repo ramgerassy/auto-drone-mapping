@@ -8,6 +8,8 @@ import pytest
 
 from swarm_mapping.simulation.localizer import GroundTruthLocalizer
 
+pytestmark = pytest.mark.sprint(1)  # tests introduced in Sprint 1
+
 
 class TestGroundTruthLocalizer:
     """Tests for GroundTruthLocalizer."""
