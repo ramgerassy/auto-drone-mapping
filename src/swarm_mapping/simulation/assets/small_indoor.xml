@@ -1,5 +1,5 @@
 <!--
-  Small indoor scenario: 20m x 20m room, 3m ceiling.
+  Small indoor scenario: 20m x 20m room, 3m walls (open top).
 
   Coordinate system: room center is at (0, 0, 0).
   Walls extend from x/y = -10 to +10, height 0 to 3.
@@ -10,30 +10,53 @@
 
   Drones are injected programmatically by SimulationEngine —
   do not define drone bodies here.
+
+  Rendering note: the room is an open-topped box (no ceiling geom) so the
+  live viewer (--view) looks down into it from above and sees the drone.
+  There is deliberately no translucency: the interactive MuJoCo viewer
+  renders large semi-transparent planes as flat grey, which hides the
+  scene. The ceiling is omitted rather than made translucent — the
+  rangefinder casts *horizontal* rays at flight altitude, so it never
+  touched the ceiling anyway, and removing it leaves the produced map
+  byte-for-byte identical.
 -->
 <mujoco model="small_indoor">
   <option timestep="0.01" gravity="0 0 -9.81"/>
 
+  <!-- Default free-camera framing. The --view CLI also sets these values
+       directly on the viewer handle (the passive viewer otherwise opens at
+       floor level); these defaults keep MuJoCo's own viewer good too, e.g.
+       `python -m mujoco.viewer --mjcf=...`. -->
+  <statistic center="0 0 1" extent="18"/>
+  <visual>
+    <headlight ambient="0.5 0.5 0.5" diffuse="0.45 0.45 0.45" specular="0 0 0"/>
+    <global azimuth="130" elevation="-40"/>
+  </visual>
+
   <worldbody>
+    <!-- Two directional lights for even illumination (no positional falloff,
+         so the floor has no hotspot). Lights never collide — no effect on
+         ray-casts or the produced map. -->
+    <light name="key" directional="true" pos="0 0 8" dir="0.2 0.3 -1"
+           diffuse="0.55 0.55 0.55" specular="0 0 0"/>
+    <light name="fill" directional="true" pos="6 6 8" dir="-0.5 -0.5 -1"
+           diffuse="0.35 0.35 0.35" specular="0 0 0"/>
+
     <!-- Floor -->
     <geom name="floor" type="plane" size="10 10 0.05"
-          rgba="0.9 0.9 0.9 1.0"/>
+          rgba="0.75 0.75 0.78 1.0"/>
 
-    <!-- Ceiling -->
-    <geom name="ceiling" type="box" pos="0 0 3.0" size="10 10 0.05"
-          rgba="0.95 0.95 0.95 1.0"/>
-
-    <!-- Walls -->
+    <!-- Walls (opaque; open top so the viewer sees inside from above) -->
     <geom name="wall_east" type="box" pos="10 0 1.5" size="0.1 10 1.5"
-          rgba="0.7 0.7 0.7 1.0"/>
+          rgba="0.55 0.58 0.65 1.0"/>
     <geom name="wall_west" type="box" pos="-10 0 1.5" size="0.1 10 1.5"
-          rgba="0.7 0.7 0.7 1.0"/>
+          rgba="0.55 0.58 0.65 1.0"/>
     <geom name="wall_north" type="box" pos="0 10 1.5" size="10 0.1 1.5"
-          rgba="0.7 0.7 0.7 1.0"/>
+          rgba="0.55 0.58 0.65 1.0"/>
     <geom name="wall_south" type="box" pos="0 -10 1.5" size="10 0.1 1.5"
-          rgba="0.7 0.7 0.7 1.0"/>
+          rgba="0.55 0.58 0.65 1.0"/>
 
-    <!-- Obstacles -->
+    <!-- Obstacles (opaque, for clear visual contrast) -->
     <geom name="obstacle_1" type="box" pos="3 3 0.5" size="1.0 0.5 0.5"
           rgba="0.8 0.4 0.2 1.0"/>
     <geom name="obstacle_2" type="box" pos="-4 2 0.75" size="0.5 1.5 0.75"

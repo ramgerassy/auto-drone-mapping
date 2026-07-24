@@ -23,6 +23,14 @@ uv run swarm-mapping --config scenarios/small_indoor/config.yaml --output output
 
 This runs a single drone through a lawnmower patrol pattern in a 20m x 20m indoor room, scanning the environment with a rangefinder sensor and building a 2.5D occupancy map.
 
+**Watch it live:** add `--view` to open an interactive MuJoCo 3D window and watch the drone fly the patrol in real time:
+
+```bash
+uv run swarm-mapping --config scenarios/small_indoor/config.yaml --output output/ --view
+```
+
+The viewer is read-only monitoring — the exported map is identical with or without it. Closing the window mid-run lets the mission finish headless. Requires a display, so it is not run in CI.
+
 **Output:**
 - `output/map.png` — height-colored occupancy image (white = free, blue = unknown, grayscale = obstacles shaded by height)
 - `output/map.npz` — raw data arrays (log-odds, probability, height, resolution, origin)
