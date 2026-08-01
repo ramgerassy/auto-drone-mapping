@@ -137,17 +137,17 @@ def detect_frontiers(
         centroid_y = sum(wy for _, wy in world) / len(world)
 
         # Representative = frontier cell nearest the centroid; ties broken by
-        # (row, col) for determinism.
-        def distance_key(
-            cell: tuple[int, int],
+        # (row, col) for determinism. Reuse the world coords computed above
+        # rather than re-projecting every cell a second time.
+        def rank(
+            item: tuple[tuple[int, int], tuple[float, float]],
             cx: float = centroid_x,
             cy: float = centroid_y,
         ) -> tuple[float, int, int]:
-            col, row = cell
-            wx, wy = grid.grid_to_world(col, row)
+            (col, row), (wx, wy) = item
             return ((wx - cx) ** 2 + (wy - cy) ** 2, row, col)
 
-        rep_col, rep_row = min(cluster, key=distance_key)
+        (rep_col, rep_row), _ = min(zip(cluster, world, strict=True), key=rank)
         regions.append(
             FrontierRegion(
                 centroid=(centroid_x, centroid_y),
