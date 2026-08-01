@@ -7,6 +7,41 @@ decided, why, and its current status.
 
 ---
 
+## 2026-08-01 — Path-planning algorithm: A\* chosen over octree / potential fields / RRT\* / wavefront
+
+Reviewed the Modern Robotics (Ch. 10) alternatives to grid A\*. **Decision:
+plain A\* on the 2D occupancy grid** for Sprint 2's path planner.
+
+The alternatives are each the right tool for a problem we deliberately *don't*
+have. Two constraints dissolve most of their motivation:
+- **We plan in 2D, not 3D.** The 2.5D map is a 2D grid + per-cell height; drones
+  fly at a fixed altitude, so planning is over `(col, row)`. The `kⁿ`
+  exponential-scaling worry that motivates octrees/sampling is about high `n`;
+  at `n = 2` with ≤250k cells it's milliseconds.
+- **Sprint 2 uses teleport movement, no dynamics.** "Smooth flyable trajectories
+  / RRT\* + smoothing" assumes dynamic flight — deferred to a possible later
+  physics sprint. The drone steps cell-to-cell, so a grid path *is* the output.
+
+Plus: hard determinism requirement, and we already maintain a uniform 2D grid.
+
+Per method:
+- **Octree / multi-resolution grid** — solves 3D memory/scaling we don't have;
+  would re-architect the (deliberately uniform) mapping grid for zero benefit.
+- **Potential fields / navigation functions** — reactive paradigm with local
+  minima; nav-functions need the full map to construct anyway; outputs a heading
+  not a path; clashes with our deliberative map→frontier→path pipeline.
+- **RRT / bi-RRT / RRT\*** — randomized (breaks determinism), only
+  *asymptotically* optimal (A\* is exact-optimal on a grid immediately), heavy
+  machinery; its wins (high-D, continuous, dynamics-aware) are all out of scope.
+- **Wavefront** — closest relative, but it's "A\* with no heuristic": floods the
+  whole reachable grid per query, and its compute-once reuse needs many-to-one
+  goals (we have each drone to a *different* frontier). A\* dominates point-to-point.
+
+**Revisit:** sampling methods (RRT\*) + path smoothing become genuinely relevant
+in the deferred **physics-based flight sprint** — bookmarked there, not now.
+
+---
+
 ## 2026-08-01 — Multiprocessing the probability / frontier calc — rejected
 
 Considered detecting the core count, splitting the occupancy grid into
