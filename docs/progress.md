@@ -7,6 +7,34 @@ decided, why, and its current status.
 
 ---
 
+## 2026-08-01 — Multiprocessing the probability / frontier calc — rejected
+
+Considered detecting the core count, splitting the occupancy grid into
+`n_cores` chunks, and computing `probability()` / the frontier masks in
+parallel subprocesses. **Rejected.**
+
+Why it loses here:
+- The calc is a **vectorized, elementwise numpy pass** — already a tight C loop,
+  and **memory-bandwidth bound, not CPU bound**. Extra cores don't widen the
+  memory bus, so they'd mostly wait on the same RAM.
+- **Overhead dwarfs the work.** The whole `probability()` call is ~1 ms on the
+  250k-cell grid. On Windows, multiprocessing uses *spawn* (a fresh interpreter
+  + numpy re-import per worker, ~100–300 ms each), plus pickling/copying grid
+  chunks in and results out. Net: a ~1 ms op becomes ~100–300 ms — a 100×+
+  regression.
+- **Determinism + constraints.** CLAUDE.md bans threading/async/multiprocessing
+  in the tick loop and requires deterministic runs; a parallel split/reassemble
+  invites ordering / floating-point nondeterminism.
+
+Rule of thumb recorded: **parallelize only when the work is large and CPU-bound
+and the coordination cost (spawn + IPC) is small relative to it.** Here the ratio
+is inverted (~1 ms work vs ~200 ms overhead). If frontier detection ever profiles
+as hot, the levers, in order, are: A (skip the `exp`), C (call it less often /
+incremental), then a compiled kernel (numba/cython) — more cores would be the
+last resort and only for a genuinely CPU-bound, seconds-scale workload.
+
+---
+
 ## 2026-08-01 — `detect_frontiers` performance options (A / B / C / D)
 
 Reviewed whether frontier detection is a heavy calculation. It isn't: overall
