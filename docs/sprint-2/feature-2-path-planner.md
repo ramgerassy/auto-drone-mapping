@@ -1,7 +1,7 @@
 # Feature 2 — A\* path planner (`planning.AStarPlanner`)
 
 Branch: `feat/path-planner` (off `sprint-2`)
-Status: **decided — implementing (tests first)**
+Status: **✅ implemented — 12 tests green, `path_planner.py` 100% coverage (pending merge into `sprint-2`)**
 
 > **Movement/heuristic decision (resolved):** Option 1 — **8-connected + octile**,
 > integer costs **10** (orthogonal) / **14** (diagonal), **no corner-cutting**
