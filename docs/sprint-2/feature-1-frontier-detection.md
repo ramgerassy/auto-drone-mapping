@@ -1,7 +1,7 @@
 # Feature 1 — Frontier detection (`mapping.get_frontiers()`)
 
 Branch: `feat/frontier-detection` (off `sprint-2`)
-Status: **decided — implementing (tests first)**
+Status: **✅ implemented — 13 tests green, `frontier.py` 100% coverage (pending merge into `sprint-2`)**
 
 > **Clustering decision (resolved):** Option **A — hand-written BFS
 > connected-components**, **8-connectivity** for clustering, `min_region_size = 2`.
