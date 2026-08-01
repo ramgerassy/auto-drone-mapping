@@ -1,7 +1,11 @@
 # Feature 2 — A\* path planner (`planning.AStarPlanner`)
 
 Branch: `feat/path-planner` (off `sprint-2`)
-Status: **planning — one decision pending (movement model + heuristic)**
+Status: **decided — implementing (tests first)**
+
+> **Movement/heuristic decision (resolved):** Option 1 — **8-connected + octile**,
+> integer costs **10** (orthogonal) / **14** (diagonal), **no corner-cutting**
+> (a diagonal is allowed only if *both* shared orthogonal neighbors are free).
 
 ## Goal
 
@@ -42,10 +46,11 @@ class AStarPlanner:
 - **Unreachable** (goal blocked, or no free path) → `None`.
 - **`start == goal`** → `[start]`.
 
-## ⏳ DECISION PENDING — movement model + heuristic (your call)
+## ✅ DECISION (resolved) — movement model + heuristic
 
-The heuristic must match how the drone is allowed to move (an admissible `h`
-never overestimates the true remaining cost, which is what keeps A\* optimal).
+Chosen: **Option 1 (8-connected + octile)**. The heuristic must match how the
+drone is allowed to move (an admissible `h` never overestimates the true
+remaining cost, which is what keeps A\* optimal).
 
 | Option | Moves | Heuristic `h(n)` | Notes |
 | --- | --- | --- | --- |
@@ -60,8 +65,9 @@ Sub-choices that come with Option 1:
 - **Integer edge costs `10` (orthogonal) / `14` (diagonal ≈ 10√2).** Keeps A\*
   in integer arithmetic → perfectly deterministic, no float-comparison edge
   cases.
-- **No corner-cutting**: a diagonal move is disallowed if *both* shared
-  orthogonal neighbors are blocked, so the drone can't clip a wall corner.
+- **No corner-cutting**: a diagonal move is allowed only if *both* shared
+  orthogonal neighbors are free — so the drone never clips a wall corner or
+  squeezes through a diagonal gap between two walls.
 
 ## Determinism (hard requirement)
 
