@@ -234,26 +234,54 @@ The wait-on-conflict rule above **amplifies** this: it pins the lower-ID drone
 stationary precisely while the higher-ID drone passes close by, and a stationary
 target scanned across consecutive ticks is the fastest route to +5.0 saturation.
 
-**Decision: exclude drones at the ray-cast layer** — give injected drone geoms a
-dedicated geom group and pass a `geomgroup` mask that excludes it, so rays never
-hit a drone at all. Options weighed: (a) this, (b) filter hit points against
-known drone poses in `perception`, (c) give `mapping` the drone positions so it
-declines to mark those cells.
+**Decision: filter teammate returns in `perception`.** Options weighed:
+(a) exclude drones at the ray-cast layer via a `geomgroup` mask, so rays never
+hit a drone at all; (b) filter hit points against known teammate poses in
+`perception`; (c) give `mapping` the drone positions so it declines to mark
+those cells.
 
-Why (a):
-- **Fixes the cause, not the symptom.** (c) patches the end of the chain, after
-  the bad reading has already travelled raycast → perception → mapper, and would
-  still need the height write suppressed separately.
-- **No dependency damage.** (c) puts per-tick swarm awareness into the one
+Chosen **(b)**. Why:
+
+- **No seam change.** `Sensor.scan(drone_id)` takes only an id, and
+  `Rangefinder` already holds the engine reference it uses for `get_pose` — so
+  it can query teammates' poses without touching the `Sensor` interface, which
+  CLAUDE.md lists as a stability point.
+- **Models what a real swarm does.** Filtering known teammate positions out of a
+  scan (shared telemetry) is the actual technique. (a) would instead make the
+  simulator lie about what the sensor saw, pushing an autonomy concern into the
+  environment model.
+- **Occlusion stays honest.** A real LiDAR cannot see *through* a teammate.
+  Under (a) rays would pass straight through and map the wall behind — better
+  coverage, but physically wrong. Under (b) the space behind a teammate stays
+  unknown for that tick and is filled in on a later pass. Accepted cost:
+  marginally slower coverage, in exchange for a sensor model that does not
+  cheat.
+- **(c) DECLINED.** It patches the end of the chain, after the bad reading has
+  already travelled raycast → perception → mapper, would still need the height
+  write suppressed separately, and puts per-tick swarm awareness into the one
   module CLAUDE.md says depends on nothing.
-- **No tuned threshold**, no per-tick bookkeeping, deterministic.
 
-Honest tradeoff: a real LiDAR *would* see a teammate. This is a documented
-simulation assumption in the same family as ground-truth localization — the
-sensor maps the environment, not the swarm. Option (b) is the realism upgrade
-path if wanted later, and it lives behind the `Sensor` seam.
-**Status: (b) DEFERRED, (c) DECLINED.**
+Cost accepted: (b) needs a tuned exclusion radius (drone body half-extent plus a
+margin) as a config value, where (a) would have needed none. Ground-truth poses
+are exact, so the radius does not need to absorb localization error. A real wall
+directly behind a teammate and within that radius is discarded too — that cell
+simply stays unknown for the tick.
 
-Test to write with the fix: two drones in line of sight — assert no occupied
+**Encoding: a filtered ray becomes a MISS with a shortened range.**
+`RayObservation` already carries `max_range` alongside `distance`/`hit_point`,
+and the mapper traces a MISS out to `obs.max_range` (`mapper.py:73-75`). So a
+ray that hits a teammate is emitted as `distance=None, hit_point=None,
+max_range=<distance to the teammate>`: cells up to the teammate are marked free
+(the ray genuinely travelled that far unobstructed), nothing is marked occupied,
+and nothing is claimed beyond. **No change to `mapping`, no change to the
+`Sensor` seam.**
+
+Rejected encodings: dropping the ray entirely throws away the legitimate
+free-space evidence up to the teammate; emitting a full-range MISS would falsely
+mark the occluded cells *behind* the teammate as free.
+
+Tests to write with the fix: two drones in line of sight — assert no occupied
 cell appears at the other drone's position, and that its height cell stays
-`-inf`.
+`-inf`; assert the cells between the two drones *are* marked free; assert the
+cells beyond the observed drone stay unknown (the occlusion shadow is
+preserved).
