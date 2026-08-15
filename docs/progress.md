@@ -132,3 +132,42 @@ while *clustering* uses **8-connectivity** so diagonally-touching frontier cells
 merge into one region.
 
 Detail doc: [`docs/sprint-2/feature-1-frontier-detection.md`](sprint-2/feature-1-frontier-detection.md).
+
+---
+
+## 2026-08-15 — Frontier scoring + spreading penalty (Sprint 2, Feature 3)
+
+Two decisions for `NearestFrontier`, the first implementation behind the
+`FrontierStrategy` seam.
+
+**D1 — what "nearest" measures. Decision: true A\* path cost.** Options weighed:
+(a) A\* to every candidate, (b) Euclidean distance to the region centroid,
+(c) hybrid — Euclidean-sort then A\* the top *K*.
+
+Why (a):
+- **Wall-aware.** Verified on the Feature-3 test grid: a frontier 3.0 m away in
+  straight line sits behind a wall at a true cost of **104**, while one 4.0 m
+  away down open space costs **40**. Euclidean scoring picks the wrong one; this
+  is `test_euclidean_near_frontier_behind_wall_loses`.
+- **Reachability for free.** An unreachable frontier returns no path and is
+  skipped, instead of being assigned and failing a tick later.
+- **Cost is affordable** at 1–5 drones (CLAUDE.md: "don't optimize for 50").
+  Option (c) stays available as a pure internal change — it does not touch the
+  seam — if the large-indoor scenario (Feature 5) shows a real tick-rate
+  problem. **Status: DEFERRED, revisit only with measurements.**
+
+**D2 — spatial spreading penalty. Decision: hard exclusion + soft radius.**
+A claimed region is never re-selected; a candidate whose centroid falls within
+`spread_radius` of a claimed centroid gets `spread_penalty` added to its *score*.
+
+Why:
+- Hard-exclusion-only under-spreads (two drones happily work frontiers 0.5 m
+  apart); soft-penalty-only permits the *same* frontier being assigned twice.
+- The penalty is **additive and integer** (same 10/14 units as A\*), so ranking
+  stays in exact integer arithmetic — no float comparison in a decision path.
+- The penalty affects **ranking only**; `FrontierAssignment.cost` reports the
+  true unpenalized path cost, keeping it honest for the path-length KPI.
+- Defaults (`spread_radius=0.0`, `spread_penalty=0`) leave the penalty off, so
+  single-drone behaviour is unchanged until Feature 6 wires up config.
+
+Detail doc: [`docs/sprint-2/feature-3-frontier-strategy.md`](sprint-2/feature-3-frontier-strategy.md).

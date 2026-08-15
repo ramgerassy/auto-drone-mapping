@@ -1,7 +1,7 @@
 # Feature 3 — Frontier strategy (`planning.NearestFrontier`)
 
 Branch: `feat/frontier-strategy` (off `sprint-2`)
-Status: **☐ planned — awaiting decision on D1/D2, then tests, then implementation**
+Status: **✅ implemented — 20 tests green, `planning` at 100% coverage (pending merge into `sprint-2`)**
 
 > `FrontierStrategy` is one of the four **named SOLID seams** (CLAUDE.md) — a
 > stability point. Once this signature lands, `coordination` depends on the
@@ -71,7 +71,11 @@ assign it, then discover the failure a tick later and waste the tick.
 stretch goal named in CLAUDE.md. Mixing it in here would blur the seam that
 justifies having two implementations.
 
-## ⚠️ DECISION D1 (needs your call) — what "nearest" measures
+## ✅ DECISION D1 (resolved) — what "nearest" measures
+
+Chosen: **Option A (true A\* path cost)**. Verified on the test grid: a frontier
+3.0 m away in straight line but behind a wall costs **104**, while one 4.0 m away
+down open space costs **40** — Euclidean scoring picks the wrong one.
 
 | Option | Metric | Cost per drone per tick | Blind spot |
 | --- | --- | --- | --- |
@@ -85,7 +89,10 @@ micro-optimization. Option C is the escape hatch if the large-indoor scenario
 (Feature 5) actually shows a tick-rate problem — and C is a change *inside*
 `NearestFrontier`, not to the seam, so deferring it costs nothing.
 
-## ⚠️ DECISION D2 (needs your call) — the spatial spreading penalty
+## ✅ DECISION D2 (resolved) — the spatial spreading penalty
+
+Chosen: **Option A (hard exclude + soft radius)**. The penalty affects *ranking*
+only — `FrontierAssignment.cost` reports the true unpenalized path cost.
 
 Purpose: stop all drones converging on the same corner of the map. Applied on
 top of D1's score.
