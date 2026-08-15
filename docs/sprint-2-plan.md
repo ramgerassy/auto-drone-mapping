@@ -43,7 +43,8 @@ sprint opens **one** PR `sprint-2 → main` at the end.
 | 1 | `feat/frontier-detection` | `mapping.get_frontiers()` — detect free-adjacent-to-unknown cells, cluster into regions, return world-coord centroids + size | mapping | ✅ merged (PR #7) |
 | 2 | `feat/path-planner` | `planning`: `PathPlanner` protocol + `AStarPlanner` on the occupancy grid | mapping | ✅ merged (PR #8) |
 | 3 | `feat/frontier-strategy` | `planning`: `FrontierStrategy` protocol + `NearestFrontier` (+ spatial spreading penalty) | mapping (1), 2 | ✅ implemented — PR pending — [plan](sprint-2/feature-3-frontier-strategy.md) |
-| 4 | `feat/coordination-master` | `coordination`: `Coordinator` protocol + `CentralizedMaster` — multi-drone tick loop, frontier assignment, claimed list, step-along-path; refactor tick loop out of `cli.py` | 2, 3, simulation | ☐ |
+| 4 | `feat/coordination-master` | `coordination`: `Coordinator` protocol + `CentralizedMaster` — multi-drone tick loop, frontier assignment, claimed list, step-along-path, **wait-on-conflict collision avoidance** | 2, 3, simulation | 🔄 planned — [plan](sprint-2/feature-4-coordination-master.md) |
+| 4b | `feat/perception-teammate-filter` | `perception`: filter teammate returns out of a scan so drones are never mapped as obstacles (emit a MISS with shortened range) | simulation, perception | ☐ deferred — decision in [progress.md](progress.md) |
 | 5 | `feat/large-indoor` | `scenarios/large_indoor/` MJCF (50×50, corridors, doorways) + config, with the open-top/lighting/handle-camera treatment | — | ☐ |
 | 6 | `feat/sprint2-integration` | Multi-drone config schema, CLI wiring, multi-drone `--view`, end-to-end + acceptance test + scaling-KPI check, update `docs/design.md` | 4, 5 | ☐ |
 
