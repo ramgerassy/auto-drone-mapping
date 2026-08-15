@@ -42,6 +42,26 @@ class PathPlanner(Protocol):
         ...
 
 
+def path_cost(path: list[Cell]) -> int:
+    """Return the total cost of a path in the planner's integer units.
+
+    Lives here rather than in the caller so the 10/14 step costs have exactly
+    one definition — a consumer scoring routes (e.g. `NearestFrontier`) ranks
+    them on the same scale A* minimized.
+
+    Args:
+        path: Contiguous cells as returned by `PathPlanner.plan`.
+
+    Returns:
+        Summed step cost; 0 for an empty or single-cell path.
+    """
+    total = 0
+    for (c0, r0), (c1, r1) in zip(path, path[1:], strict=False):
+        diagonal = c0 != c1 and r0 != r1
+        total += _COST_DIAGONAL if diagonal else _COST_ORTHOGONAL
+    return total
+
+
 def _reconstruct(came_from: dict[Cell, Cell], current: Cell) -> list[Cell]:
     """Walk parent pointers back to the start, returning start→goal order."""
     path = [current]
