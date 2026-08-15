@@ -1,7 +1,7 @@
 # Feature 4 — Centralized master (`coordination.CentralizedMaster`)
 
 Branch: `feat/coordination-master` (off `sprint-2`)
-Status: **☐ planned — awaiting decision on D1/D2, then tests, then implementation**
+Status: **✅ implemented — 42 tests green, `coordination` at 100% coverage (pending merge into `sprint-2`)**
 
 > `Coordinator` is the last of the four **named SOLID seams**. Once this
 > signature lands, `visualization` and `cli` depend on the Protocol, never on
@@ -120,7 +120,10 @@ centres in world coordinates.
 `movement.py` and is tested exhaustively without MuJoCo, per the testing
 philosophy. The master just calls it and teleports accordingly.
 
-## ⚠️ DECISION D1 (needs your call) — the `Coordinator` seam shape
+## ✅ DECISION D1 (resolved) — the `Coordinator` seam shape
+
+Chosen: **Option A (`tick()` + `is_complete`)**, plus `drone_states` as the
+read-only view for `visualization`.
 
 | Option | Signature | Notes |
 | --- | --- | --- |
@@ -132,7 +135,7 @@ philosophy. The master just calls it and teleports accordingly.
 Sprint 2 keeps multi-drone `--view` (Feature 6). Option B would make that
 impossible. A `run()` convenience, if wanted, belongs in the CLI, not the seam.
 
-## ⚠️ DECISION D2 (needs your call) — how much of `cli.py` moves now
+## ✅ DECISION D2 (resolved) — how much of `cli.py` moves now
 
 The sprint plan puts "refactor tick loop out of `cli.py`" in this feature, but
 `run_pipeline` currently hardcodes the Sprint-1 patrol.
@@ -142,7 +145,9 @@ The sprint plan puts "refactor tick loop out of `cli.py`" in this feature, but
 | **A. Build + unit-test only** (recommended) | `CentralizedMaster` fully built and tested; `cli.py` untouched | Feature 4 ships nothing user-visible; Feature 6 wires it |
 | B. Full rewire now | `run_pipeline` drops patrol, drives the coordinator | Feature 4's PR grows to include CLI, config schema and the e2e test — the things Feature 6 exists to do |
 
-**Recommendation: A.** `tests/unit/test_cli.py` only covers `interpolate_segment`
+Chosen: **Option A** — `cli.py` untouched; Feature 6 wires it up.
+
+`tests/unit/test_cli.py` only covers `interpolate_segment`
 (a pure helper), so nothing breaks either way — but the integration test
 `tests/integration/test_e2e.py` drives `run_pipeline`, and rewiring it now drags
 multi-drone config schema into this branch. Feature 6 already owns that.
