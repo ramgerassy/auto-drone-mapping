@@ -196,9 +196,12 @@ Consequences to honour in the implementation:
   first-come-first-served and invert the rule. The tick therefore iterates
   drones **descending by ID** — uniformly, for both frontier assignment and
   movement, so there is one seniority rule rather than two orders in one tick.
-- **Swap conflicts need an explicit check.** If drone 3 steps into drone 1's
-  cell while drone 1 steps into drone 3's, both targets read as free and they
-  pass through each other. Checking target-cell occupancy alone is insufficient.
+- **Swap conflicts.** If drone 3 steps into drone 1's cell while drone 1 steps
+  into drone 3's, both targets read as free under a naive occupancy test and
+  they pass through each other. *Resolved in the Feature 4 plan without a
+  separate check:* seeding the reservation table with every drone's **current**
+  cell means an unprocessed drone still blocks its own cell, so the swap can
+  never be reserved. One conservative rule covers both conflict classes.
 - **Separation is a distance, not a cell.** At `resolution: 0.1` a cell is 10 cm
   and a drone body is several times that, so the threshold is a config value in
   metres converted to a cell radius — never hardcoded to one cell.
