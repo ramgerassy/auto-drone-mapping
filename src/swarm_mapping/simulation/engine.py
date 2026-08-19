@@ -145,6 +145,16 @@ class SimulationEngine:
         return self._data
 
     @property
+    def drone_ids(self) -> list[int]:
+        """Ids of every drone in the scene, ascending.
+
+        The engine is the authority on drone count — it injected the bodies —
+        so consumers enumerate from here rather than being handed a list that
+        could disagree with the model.
+        """
+        return sorted(self._joint_qpos_adr)
+
+    @property
     def timestep(self) -> float:
         """Simulation timestep in seconds."""
         return float(self._model.opt.timestep)

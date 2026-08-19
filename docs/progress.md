@@ -171,3 +171,120 @@ Why:
   single-drone behaviour is unchanged until Feature 6 wires up config.
 
 Detail doc: [`docs/sprint-2/feature-3-frontier-strategy.md`](sprint-2/feature-3-frontier-strategy.md).
+
+---
+
+## 2026-08-15 — Inter-drone collision avoidance (Sprint 2, Feature 4)
+
+The "zero collisions during nominal ops" KPI had no definition, detector, or
+enforcement anywhere in the repo — `collision` appeared only in the KPI lines
+themselves. Half of it was already satisfied by construction: A\* traverses only
+free cells and refuses corner-cutting, so a planned path cannot clip an
+obstacle. The drone↔drone half was unaddressed. Folded into Feature 4, since
+multi-drone does not exist before it.
+
+**Decision: wait-on-conflict, higher drone ID has right of way.** When two
+drones would occupy the same cell, the lower-ID drone holds position until the
+cell clears. Not re-planning: movement is teleport (Decision 2), so there is no
+momentum and holding costs nothing, whereas dynamic-obstacle re-planning is
+strictly more complex and two drones re-routing around each other can oscillate.
+
+Consequences to honour in the implementation:
+
+- **Precedence must drive iteration order.** Whichever drone is processed first
+  reserves its cell first, so an ascending walk would silently make precedence
+  first-come-first-served and invert the rule. The tick therefore iterates
+  drones **descending by ID** — uniformly, for both frontier assignment and
+  movement, so there is one seniority rule rather than two orders in one tick.
+- **Swap conflicts.** If drone 3 steps into drone 1's cell while drone 1 steps
+  into drone 3's, both targets read as free under a naive occupancy test and
+  they pass through each other. *Resolved in the Feature 4 plan without a
+  separate check:* seeding the reservation table with every drone's **current**
+  cell means an unprocessed drone still blocks its own cell, so the swap can
+  never be reserved. One conservative rule covers both conflict classes.
+- **Separation is a distance, not a cell.** At `resolution: 0.1` a cell is 10 cm
+  and a drone body is several times that, so the threshold is a config value in
+  metres converted to a cell radius — never hardcoded to one cell.
+- **Deadlock escape.** Two drones head-on in a corridor wait on each other
+  forever under a pure wait rule. After N consecutive waited ticks the waiting
+  drone drops its frontier claim and re-selects. This is the only place
+  re-planning enters, as a remedy rather than the mechanism.
+
+---
+
+## 2026-08-15 — Drones must not be mapped as obstacles (Sprint 2, Feature 4)
+
+Found while reasoning about what happens when two drones approach each other:
+`mujoco.mj_ray`'s `bodyexclude` takes a **single** body id — the sensing drone's
+own — and `raycaster.py` passes `geomgroup=None` (all groups hittable). With
+multiple drones injected as real bodies, drone 1 excludes itself and then ranges
+drones 2-5 as though they were walls. Three consequences:
+
+1. **Occupancy.** A false hit needs ~2-3 later free observations to wash out
+   (`log_odds_occ` +0.847 vs `log_odds_free` -0.405), but a repeatedly-scanned
+   drone saturates at the `+5.0` clamp, from which recovery takes ~14
+   consecutive free observations.
+2. **Planning.** A\* blocks occupied *and* unknown cells, so a phantom obstacle
+   can sever a corridor and delete the frontier cells it sat on — a drone can
+   conclude a region is unreachable because a teammate was standing there.
+3. **Height — permanent.** `update_occupied` does
+   `height[row, col] = max(height[row, col], hit_z)`: monotonic, no decay. A
+   drone seen at 1.0 m altitude writes height 1.0 into a floor cell *forever*,
+   surviving the occupancy recovery. The occupancy channel self-heals; the
+   height channel has no recovery path at all.
+
+The wait-on-conflict rule above **amplifies** this: it pins the lower-ID drone
+stationary precisely while the higher-ID drone passes close by, and a stationary
+target scanned across consecutive ticks is the fastest route to +5.0 saturation.
+
+**Decision: filter teammate returns in `perception`.** Options weighed:
+(a) exclude drones at the ray-cast layer via a `geomgroup` mask, so rays never
+hit a drone at all; (b) filter hit points against known teammate poses in
+`perception`; (c) give `mapping` the drone positions so it declines to mark
+those cells.
+
+Chosen **(b)**. Why:
+
+- **No seam change.** `Sensor.scan(drone_id)` takes only an id, and
+  `Rangefinder` already holds the engine reference it uses for `get_pose` — so
+  it can query teammates' poses without touching the `Sensor` interface, which
+  CLAUDE.md lists as a stability point.
+- **Models what a real swarm does.** Filtering known teammate positions out of a
+  scan (shared telemetry) is the actual technique. (a) would instead make the
+  simulator lie about what the sensor saw, pushing an autonomy concern into the
+  environment model.
+- **Occlusion stays honest.** A real LiDAR cannot see *through* a teammate.
+  Under (a) rays would pass straight through and map the wall behind — better
+  coverage, but physically wrong. Under (b) the space behind a teammate stays
+  unknown for that tick and is filled in on a later pass. Accepted cost:
+  marginally slower coverage, in exchange for a sensor model that does not
+  cheat.
+- **(c) DECLINED.** It patches the end of the chain, after the bad reading has
+  already travelled raycast → perception → mapper, would still need the height
+  write suppressed separately, and puts per-tick swarm awareness into the one
+  module CLAUDE.md says depends on nothing.
+
+Cost accepted: (b) needs a tuned exclusion radius (drone body half-extent plus a
+margin) as a config value, where (a) would have needed none. Ground-truth poses
+are exact, so the radius does not need to absorb localization error. A real wall
+directly behind a teammate and within that radius is discarded too — that cell
+simply stays unknown for the tick.
+
+**Encoding: a filtered ray becomes a MISS with a shortened range.**
+`RayObservation` already carries `max_range` alongside `distance`/`hit_point`,
+and the mapper traces a MISS out to `obs.max_range` (`mapper.py:73-75`). So a
+ray that hits a teammate is emitted as `distance=None, hit_point=None,
+max_range=<distance to the teammate>`: cells up to the teammate are marked free
+(the ray genuinely travelled that far unobstructed), nothing is marked occupied,
+and nothing is claimed beyond. **No change to `mapping`, no change to the
+`Sensor` seam.**
+
+Rejected encodings: dropping the ray entirely throws away the legitimate
+free-space evidence up to the teammate; emitting a full-range MISS would falsely
+mark the occluded cells *behind* the teammate as free.
+
+Tests to write with the fix: two drones in line of sight — assert no occupied
+cell appears at the other drone's position, and that its height cell stays
+`-inf`; assert the cells between the two drones *are* marked free; assert the
+cells beyond the observed drone stay unknown (the occlusion shadow is
+preserved).
