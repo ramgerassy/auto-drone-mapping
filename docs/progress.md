@@ -380,3 +380,73 @@ Only drone-to-obstacle had no knob at all.
 
 Scoped to its own branch rather than folded into the Feature 4 PR: it modifies
 `AStarPlanner`, which is already merged, and touches the config schema.
+
+### Addendum (same day) — the same bug class in `min_separation`
+
+Walking `resolve_moves` line by line turned up the drone-to-drone half of this,
+so it folds into 4c rather than getting its own branch.
+
+**What the check actually does.** `master.py:68` converts `min_separation` from
+metres to cells (`/ resolution`), and `movement.py:62-67` compares squared
+Euclidean distance in cell units against `threshold_sq`. The left-hand side is
+pure integer arithmetic, so only the threshold is float and determinism holds.
+The forbidden zone around each drone is therefore a **disc** of radius
+`min_separation_cells` — not "the same cell", and not a square.
+
+**Correcting my own earlier claim** that this "took the drone size into
+account": it does not. Nothing in `movement.py` or `master.py` reads drone
+geometry — no half-extent, no reference to the body geom. `resolve_moves`
+enforces whatever number it is handed. What is true is narrower: the knob has
+the right *units* and the right *shape* — a metric radius that rescales with
+`resolution`, rather than a `target != other_cell` test that would have baked in
+"one cell is enough" and been wrong at any resolution finer than the drone.
+That is the difference from the drone-to-obstacle case above, where there is no
+knob at all. But it is a correctly-shaped knob with no correct default.
+
+**Why the floor is the body *diagonal*, 0.424 m — not 0.30 m.** The test is
+radial; the body is an axis-aligned box. Two such boxes overlap iff
+`max(|dx|, |dy|) < 2h`, a Chebyshev condition, and `L_inf <= L_2` always — so
+passing a radial test does *not* imply the boxes are clear. Take
+`dx = dy = 0.212`: Euclidean distance is 0.30 (passes a 0.30 m threshold) while
+Chebyshev is 0.212, so the boxes overlap by ~0.09 m. A diagonal approach slips
+straight through. Making a radial test safe for a square body requires the
+**circumscribed** diameter, `2h * sqrt(2) = 0.30 * sqrt(2) ~= 0.424 m`. The
+tests' 0.5 m clears it; anything between 0.30 and 0.424 would look reasonable
+and silently permit diagonal overlap.
+
+*Rejected:* switching `resolve_moves` to a Chebyshev test, which would be exact
+for a non-rotating box and permit tighter packing. Tighter packing is worth
+nothing at 1-5 drones, and the change would alter the shipped semantics and the
+test that pins them (`test_diagonal_separation_uses_euclidean_distance`). Keep
+the radial test; enforce the diagonal as the floor.
+
+**Three guards for 4c:**
+
+1. **`min_separation` floor.** Currently a required arg with no default and no
+   validation (`grep` confirms it is only ever passed through). Reject anything
+   below the body diagonal at construction.
+2. **Start-position validation.** Nothing checks initial spacing, and
+   `resolve_moves` only prevents *new* violations — it never repairs an existing
+   one. Two drones spawned inside each other's disc find every target blocked,
+   burn through `max_wait_ticks`, re-select, and stay frozen: a permanent
+   deadlock from config alone. Pairwise check at construction; O(n^2) at n <= 5.
+3. **Swept motion, noted not fixed.** Only end-of-tick positions are compared,
+   never the motion between them — and movement is teleport, so drones jump.
+   What rescues this today is the configured *values*, not the code: a step is
+   one cell while the threshold is >= 4.24 cells at `resolution: 0.1`, so a
+   drone can never get close enough to tunnel past another. Nothing enforces
+   `min_separation_cells > step`. Assert it alongside guard 1 rather than
+   building swept-volume collision checking.
+
+**Where the guards live — and why not in `config`.** The natural home for the
+physical constants is `simulation`, the module that builds the body: promote the
+hardcoded `0.15` in `_build_drone_xml` to a module constant and derive the
+diagonal from it. `coordination` may read that (the dependency direction allows
+`coordination -> simulation`), so the guards go in `CentralizedMaster.__init__`.
+They must **not** go in `config` validation, which would mean
+`config -> simulation` and CLAUDE.md is explicit that `config` depends on
+nothing. So: `config` carries the user-facing values and checks only
+schema-level sanity (present, positive); the physical floors are enforced where
+the geometry is visible. This also settles the "where does the half-extent live"
+question left open above — one constant in `simulation`, read by consumers,
+never duplicated into YAML.
