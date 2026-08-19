@@ -12,6 +12,23 @@ from swarm_mapping.simulation.localizer import GroundTruthLocalizer
 from swarm_mapping.simulation.raycaster import MjRayCaster
 from swarm_mapping.simulation.types import Pose, RayHit
 
+# Physical drone geometry. Both the MJCF builder below and the consumers that
+# need to reason about the body (the perception teammate filter; planner
+# clearance) read these rather than repeating the literals.
+DRONE_HALF_EXTENT = 0.15
+"""Half-extent of the drone's body box, in metres (a 0.30 m square footprint)."""
+
+DRONE_EXCLUSION_RADIUS = 0.30
+"""Radius around a drone's centre within which a ray hit is assumed to be that
+drone rather than the environment.
+
+Sized to cover the farthest ray-visible point of the body: box corners sit at
+``0.15 * sqrt(2) = 0.212`` m, and the rotors reach ``0.212 + 0.08 = 0.292`` m.
+The rotors are non-colliding (``contype=0``), but ``mj_ray`` filters on
+geomgroup and flg_static only — not contype — so they are ray-visible in
+principle, and are missed today only because they sit above the sensor plane.
+"""
+
 # Drone colors cycle for visual distinction in multi-drone scenarios
 _DRONE_COLORS = [
     "0.2 0.6 1.0 1.0",  # blue
@@ -35,23 +52,24 @@ def _build_drone_xml(drone_id: int, position: NDArray[np.float64]) -> str:
     name = f"drone_{drone_id}"
     color = _DRONE_COLORS[drone_id % len(_DRONE_COLORS)]
     pos = f"{position[0]} {position[1]} {position[2]}"
+    h = DRONE_HALF_EXTENT  # rotors sit at the body corners, so they share it
 
     return f"""\
     <body name="{name}" pos="{pos}">
       <freejoint name="{name}_joint"/>
-      <geom name="{name}_body" type="box" size="0.15 0.15 0.05"
+      <geom name="{name}_body" type="box" size="{h} {h} 0.05"
             mass="0.5" rgba="{color}"/>
       <geom name="{name}_rotor_fl" type="cylinder" size="0.08 0.01"
-            pos="0.15 0.15 0.05" rgba="0.3 0.3 0.3 0.5"
+            pos="{h} {h} 0.05" rgba="0.3 0.3 0.3 0.5"
             contype="0" conaffinity="0"/>
       <geom name="{name}_rotor_fr" type="cylinder" size="0.08 0.01"
-            pos="0.15 -0.15 0.05" rgba="0.3 0.3 0.3 0.5"
+            pos="{h} -{h} 0.05" rgba="0.3 0.3 0.3 0.5"
             contype="0" conaffinity="0"/>
       <geom name="{name}_rotor_bl" type="cylinder" size="0.08 0.01"
-            pos="-0.15 0.15 0.05" rgba="0.3 0.3 0.3 0.5"
+            pos="-{h} {h} 0.05" rgba="0.3 0.3 0.3 0.5"
             contype="0" conaffinity="0"/>
       <geom name="{name}_rotor_br" type="cylinder" size="0.08 0.01"
-            pos="-0.15 -0.15 0.05" rgba="0.3 0.3 0.3 0.5"
+            pos="-{h} -{h} 0.05" rgba="0.3 0.3 0.3 0.5"
             contype="0" conaffinity="0"/>
     </body>"""
 

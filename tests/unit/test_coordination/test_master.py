@@ -3,10 +3,10 @@
 Uses a tiny inline MJCF room — never a MuJoCo mock, per CLAUDE.md. The scene
 carries no drone bodies; SimulationEngine injects them.
 
-Map *accuracy* is deliberately not asserted here: until the perception teammate
-filter lands (Feature 4b), drones range each other and appear in the map as
-phantom obstacles. These tests assert coverage growth, mission completion,
-separation and determinism — none of which that artifact affects.
+Map accuracy is asserted since Feature 4b landed: with the perception teammate
+filter in place, drones no longer range each other into the map. The assertion
+is on the height layer — see TestMapAccuracy for why occupancy is not the
+discriminating signal over a full mission.
 """
 
 from __future__ import annotations
@@ -205,6 +205,42 @@ class TestSeparationInvariant:
         run_mission(master, max_ticks=300)
 
         assert master.is_complete
+
+
+class TestMapAccuracy:
+    """The swarm maps the room, not itself."""
+
+    def test_height_layer_has_no_phantom_heights(self, scene: Path) -> None:
+        """No floor cell in the empty interior carries a drone's altitude.
+
+        This is the mission-level teammate-filter assertion, and deliberately
+        the *height* layer rather than occupancy. Measured on this scene with
+        the filter disabled: 47 poisoned height cells but **zero** phantom
+        occupied cells — a false occupied reading needs only 2-3 later free
+        observations to wash out, and over a 20-tick mission every drone cell
+        gets them. `update_occupied` does `height = max(height, hit_z)`, which
+        is monotonic, so the height layer has no such recovery path and a drone
+        written in once stays for the whole mission.
+
+        Single-scan occupancy — where the artifact is visible before it washes
+        out — is covered in tests/integration/test_teammate_filter.py.
+        """
+        master, _, mapper = build_master(
+            scene, {0: (-1.5, 0.0), 1: (1.5, 0.0), 2: (0.0, 1.5)}
+        )
+        run_mission(master, max_ticks=300)
+
+        grid = mapper.grid
+        poisoned = []
+        for col in range(grid.config.grid_width):
+            for row in range(grid.config.grid_height):
+                world_x, world_y = grid.grid_to_world(col, row)
+                # The walls' inner faces are at +-2.9, so this is empty space.
+                interior = abs(world_x) < 2.8 and abs(world_y) < 2.8
+                if interior and grid.height[row, col] != -np.inf:
+                    poisoned.append((col, row))
+
+        assert poisoned == []
 
 
 class TestDeterminism:

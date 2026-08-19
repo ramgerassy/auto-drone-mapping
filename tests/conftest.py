@@ -65,9 +65,14 @@ class FakeEngine:
     (perception, mapping, coordination) without needing MuJoCo.
 
     Args:
-        pose: The pose returned for any drone_id.
+        pose: The pose returned for any drone_id without an entry in `poses`.
         ray_results: The ray-cast results returned for any call.
         time: The simulation time to report.
+        poses: Per-drone poses, for tests that need drones to differ. Drones
+            absent from this mapping fall back to `pose`.
+        drone_ids: The swarm's drone ids. Defaults to the keys of `poses`, or
+            to a single drone `[0]` — so single-drone call sites need neither
+            argument.
     """
 
     def __init__(
@@ -75,14 +80,26 @@ class FakeEngine:
         pose: Pose,
         ray_results: list[RayHit | None],
         time: float = 0.0,
+        poses: dict[int, Pose] | None = None,
+        drone_ids: list[int] | None = None,
     ) -> None:
         self._pose = pose
         self._ray_results = ray_results
         self._time = time
+        self._poses = dict(poses) if poses is not None else {}
+        if drone_ids is not None:
+            self._drone_ids = sorted(drone_ids)
+        else:
+            self._drone_ids = sorted(self._poses) if self._poses else [0]
+
+    @property
+    def drone_ids(self) -> list[int]:
+        """Ids of every drone in the scene, ascending."""
+        return list(self._drone_ids)
 
     def get_pose(self, drone_id: int) -> Pose:
-        """Return the configured pose."""
-        return self._pose
+        """Return this drone's pose, or the shared fallback pose."""
+        return self._poses.get(drone_id, self._pose)
 
     def cast_rays(
         self,

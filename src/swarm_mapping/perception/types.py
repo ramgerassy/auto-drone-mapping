@@ -22,7 +22,10 @@ class RayObservation:
     Attributes:
         origin: Ray origin in world coordinates, shape (3,).
         direction: Unit direction vector, shape (3,).
-        max_range: Maximum sensor range in meters.
+        max_range: How far to trace free space along this ray, in metres.
+            Usually the sensor's rating, but a ray filtered as a teammate
+            carries the distance to that teammate instead — free up to it,
+            nothing claimed beyond.
         distance: Distance to hit point, or None if the ray missed
             (or hit beyond max_range).
         hit_point: World-coordinate hit point, shape (3,), or None

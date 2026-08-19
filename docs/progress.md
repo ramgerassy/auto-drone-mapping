@@ -450,3 +450,30 @@ schema-level sanity (present, positive); the physical floors are enforced where
 the geometry is visible. This also settles the "where does the half-extent live"
 question left open above — one constant in `simulation`, read by consumers,
 never duplicated into YAML.
+
+### Addendum (2026-08-20, Feature 4b implemented) — measured, and one vacuous test caught
+
+Implementing the filter let the three predicted consequences be measured rather
+than reasoned about. Three drones, 20-tick mission in the 6x6 test room, filter
+disabled vs enabled:
+
+```
+filter OFF   phantom occupied cells = 0    poisoned height cells = 47
+filter ON    phantom occupied cells = 0    poisoned height cells =  0
+```
+
+The occupancy prediction was right in a way that matters for testing: a false
+occupied reading needs only 2-3 later free observations to wash out, and over a
+full mission every drone cell gets them — so **occupancy self-heals to zero even
+with the bug present**. A mission-level "no phantom obstacles" assertion is
+therefore *vacuous*: it passes with the filter off. It was written, measured,
+and deleted.
+
+The height layer is the discriminating signal, exactly as predicted, because
+`max(height, hit_z)` is monotonic. `test_master.py` asserts on height;
+single-scan occupancy — where the artifact is visible before it washes out — is
+asserted in the integration tests instead.
+
+Worth remembering as a testing lesson, not just a mapping one: a self-healing
+channel cannot carry a regression test for the thing it heals from.
+

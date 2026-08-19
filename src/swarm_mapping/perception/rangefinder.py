@@ -8,7 +8,10 @@ import numpy as np
 from numpy.typing import NDArray
 
 from swarm_mapping.perception.types import RayObservation, ScanResult
-from swarm_mapping.simulation.engine import SimulationEngine
+from swarm_mapping.simulation.engine import (
+    DRONE_EXCLUSION_RADIUS,
+    SimulationEngine,
+)
 
 
 def _rotate_vectors_by_quaternion(
@@ -63,6 +66,10 @@ class Rangefinder:
         angular_range: Angular coverage in radians. Default 2π
             (full 360° sweep). Rays are centered on the drone's
             forward (+x) direction.
+        exclusion_radius: Radius in metres around a teammate's centre within
+            which a hit is attributed to that teammate rather than to the
+            environment, and re-encoded as a MISS. Pass 0.0 to disable
+            filtering entirely.
     """
 
     def __init__(
@@ -71,11 +78,14 @@ class Rangefinder:
         num_rays: int = 36,
         max_range: float = 10.0,
         angular_range: float = 2 * math.pi,
+        exclusion_radius: float = DRONE_EXCLUSION_RADIUS,
     ) -> None:
         self._engine = engine
         self._num_rays = num_rays
         self._max_range = max_range
         self._angular_range = angular_range
+        # Compared against squared distances, so the sqrt never runs.
+        self._exclusion_radius_sq = exclusion_radius * exclusion_radius
 
         # Pre-compute body-frame ray directions (XY plane)
         self._body_directions = self._compute_directions()
@@ -109,6 +119,9 @@ class Rangefinder:
         directions (rotated by the drone's orientation), and packages
         the results as RayObservation objects.
 
+        Hits landing on a teammate are re-encoded as misses with the range
+        shortened to the teammate's distance — see `_is_teammate`.
+
         Args:
             drone_id: Integer identifier for the drone.
 
@@ -116,6 +129,7 @@ class Rangefinder:
             A ScanResult containing all ray observations.
         """
         pose = self._engine.get_pose(drone_id)
+        teammates = self._teammate_positions(drone_id)
 
         # Rotate body-frame directions to world frame
         world_directions = _rotate_vectors_by_quaternion(
@@ -131,13 +145,27 @@ class Rangefinder:
             direction = world_directions[i]
 
             if hit is not None and hit.distance <= self._max_range:
-                obs = RayObservation(
-                    origin=pose.position.copy(),
-                    direction=direction.copy(),
-                    max_range=self._max_range,
-                    distance=hit.distance,
-                    hit_point=hit.hit_point.copy(),
-                )
+                if self._is_teammate(hit.hit_point, teammates):
+                    # A teammate is not part of the map. Emit a MISS that
+                    # stops where the teammate is: the ray genuinely travelled
+                    # that far unobstructed, so those cells are free, but
+                    # nothing is claimed at or beyond the teammate. That keeps
+                    # the occlusion shadow a real LiDAR would also have.
+                    obs = RayObservation(
+                        origin=pose.position.copy(),
+                        direction=direction.copy(),
+                        max_range=hit.distance,
+                        distance=None,
+                        hit_point=None,
+                    )
+                else:
+                    obs = RayObservation(
+                        origin=pose.position.copy(),
+                        direction=direction.copy(),
+                        max_range=self._max_range,
+                        distance=hit.distance,
+                        hit_point=hit.hit_point.copy(),
+                    )
             else:
                 # Miss or beyond max range
                 obs = RayObservation(
@@ -156,3 +184,50 @@ class Rangefinder:
             observations=observations,
             timestamp=self._engine.time,
         )
+
+    def _teammate_positions(self, drone_id: int) -> list[NDArray[np.float64]]:
+        """World positions of every drone in the swarm except this one.
+
+        Ground-truth poses stand in for the shared telemetry a real swarm would
+        broadcast, so the radius below absorbs body extent only — never
+        localization error.
+
+        Args:
+            drone_id: The sensing drone, excluded from the result.
+
+        Returns:
+            Positions in ascending drone-id order.
+        """
+        return [
+            self._engine.get_pose(other).position
+            for other in sorted(self._engine.drone_ids)
+            if other != drone_id
+        ]
+
+    def _is_teammate(
+        self,
+        hit_point: NDArray[np.float64],
+        teammates: list[NDArray[np.float64]],
+    ) -> bool:
+        """Whether a hit point falls on one of the teammates.
+
+        A radial test in 3D. 3D rather than 2D costs nothing while every drone
+        shares one altitude, and stays correct if they are ever separated
+        vertically — where a 2D test would discard a wall merely sharing an
+        (x, y) with a drone flying above it.
+
+        Iteration is in sorted id order for legibility only; this is a boolean
+        any-match, so order cannot change the result.
+
+        Args:
+            hit_point: The world-coordinate hit point.
+            teammates: Teammate positions from `_teammate_positions`.
+
+        Returns:
+            True if the hit should be discarded as a teammate.
+        """
+        for position in teammates:
+            delta = hit_point - position
+            if float(delta @ delta) < self._exclusion_radius_sq:
+                return True
+        return False
