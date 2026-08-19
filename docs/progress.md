@@ -288,3 +288,95 @@ cell appears at the other drone's position, and that its height cell stays
 `-inf`; assert the cells between the two drones *are* marked free; assert the
 cells beyond the observed drone stay unknown (the occlusion shadow is
 preserved).
+
+---
+
+## 2026-08-19 — The drone has a body; the planner assumes a point (Sprint 2, Feature 4c)
+
+Raised while reading `CentralizedMaster._teleport`: if a cell is 10 cm and the
+drone is 30 cm, and teleport places the drone's *centre* on the cell centre,
+what stops a frontier cell adjacent to a wall from parking the drone half inside
+that wall? Nothing does. Confirmed at every link in the chain:
+
+- `_teleport` calls `grid_to_world(*cell)`, which returns the cell **centre**
+  (`grid.py:79`), and `set_drone_position` writes it into `qpos[0:3]` — the
+  freejoint origin. The body geom carries no `pos` offset
+  (`engine.py:42`), so the box centre *is* the body origin. Centre on centre.
+- The colliding footprint is `type="box" size="0.15 0.15 0.05"` — MuJoCo sizes
+  are half-extents, so **0.30 m x 0.30 m**. (The four rotors reach 0.23 m but
+  carry `contype="0" conaffinity="0"`; they are decoration.)
+- At `resolution: 0.1` that is **3 cells wide, half-extent 1.5 cells** — while
+  every planning decision treats the drone as dimensionless:
+  `AStarPlanner.plan`'s `is_free(col, row)` tests one cell
+  (`path_planner.py:105`), `NearestFrontier.select` plans to `region.cell` with
+  no clearance test, and `assign_all` / `is_assignment_valid` check a single
+  `prob[row, col]`. `grep -rn 'inflat|clearance|footprint' src/` returns nothing.
+
+A cell centre is 0.05 m from the cell boundary, so with the wall face on that
+boundary the body reaches 0.15 m — **0.10 m inside the wall**. This is not only
+the frontier terminus: A\* routes *through* wall-adjacent cells too. MuJoCo will
+not object, because `set_drone_position` calls `mj_forward`, never `mj_step` —
+there is no contact resolution to push back. The drone simply clips through.
+
+This is a latent Sprint-1 bug as well: the hardcoded patrol used
+`x_range: [-8, 8]` inside 10 m walls, so it never came close enough to bite.
+
+**Decision: obstacle inflation (configuration-space expansion) in `planning`.**
+`AStarPlanner` gains a clearance radius and builds an inflated-free mask once
+per `plan()` call — one pass over a 200x200 grid, cheap and obvious.
+
+Not in `mapping`. The map is a record of the world, not of the body moving
+through it; inflating the stored grid would corrupt the exported `.npz` and
+break the >=98% per-cell accuracy KPI directly. C-space expansion is a property
+of the robot doing the planning, which is exactly where `planning` sits.
+
+**Square inflation is exact here, not conservative.** `set_drone_position`
+resets the quaternion to identity on every teleport and no `mj_step` ever runs,
+so the drone never rotates. An axis-aligned box against an axis-aligned grid
+means Chebyshev (square) inflation of the half-extent is the true C-space
+obstacle — no circumscribed-radius slack needed.
+
+**The radius, exactly.** An occupied cell at Chebyshev distance `k` has its near
+face at `(k - 0.5) * res`. No overlap requires `(k - 0.5) * res >= h`, so the
+minimum legal distance is `k_min = ceil(h/res + 0.5)` and the inflation radius
+is `r = k_min - 1`. At `h = 0.15, res = 0.1`: `k_min = 2`, **`r = 1`** — and
+that is *grazing*, 0.15 m against 0.15 m with zero clearance. A corridor would
+need `2r + 1 = 3` free cells (0.30 m), i.e. exactly the drone's width, touching
+both walls. So the value wants a safety margin `m`, giving
+`r = ceil((h + m)/res + 0.5) - 1`; a 5 cm margin yields **`r = 2`** and a
+5-cell (0.50 m) minimum corridor. *(Correcting my own first pass at this: I
+quoted `r = ceil(h/res) = 2` as the exact requirement. The exact requirement is
+`r = 1`; `r = 2` is the margin-inclusive recommendation. The distinction is
+load-bearing because it is the difference between a 0.30 m and a 0.50 m minimum
+doorway in Feature 5.)*
+
+Three consequences that need deciding in the Feature 4c plan, not just coding:
+
+1. **Inflate only *known-occupied* cells, never unknown.** A frontier is by
+   definition free-adjacent-to-unknown; inflate unknown and every frontier
+   becomes unreachable and exploration halts on tick 1. Accepted cost: a drone
+   sitting on a frontier overlaps unknown space that may turn out to be wall —
+   inherent to exploration, and corrected as the map fills in.
+2. **The start cell needs an escape hatch.** A drone that discovers a wall
+   beside itself is suddenly inside the inflated zone, so `plan()` returns
+   `None`, `assign_all` gives it no assignment, and if that holds for every
+   drone `_complete` flips to `True` — the mission reports success over a
+   half-unknown map. The start cell must always be traversable.
+3. **It constrains Feature 5.** The large-indoor MJCF's doorways and corridors
+   must exceed `2r + 1` cells of *usable* width or the map will be perfectly
+   accurate and completely unnavigable.
+
+**Open for the plan doc:** where the half-extent lives. It is currently
+hardcoded as `0.15` inside `_build_drone_xml` (`engine.py:42`); putting a
+clearance value in YAML duplicates it, and the two silently disagreeing is worse
+than either. Candidates: a module constant in `engine.py` that both the MJCF
+builder and config validation read, versus a config value validated against it.
+
+**Already correct, for contrast:** `min_separation` is a config value in metres
+converted to cells via `resolution` (`master.py:69`), so drone-to-drone spacing
+was built with body size in mind from the start. Its floor should be documented
+as the body diagonal, `0.30 * sqrt(2) ~= 0.424 m`; the tests' 0.5 m clears it.
+Only drone-to-obstacle had no knob at all.
+
+Scoped to its own branch rather than folded into the Feature 4 PR: it modifies
+`AStarPlanner`, which is already merged, and touches the config schema.
