@@ -450,3 +450,91 @@ schema-level sanity (present, positive); the physical floors are enforced where
 the geometry is visible. This also settles the "where does the half-extent live"
 question left open above — one constant in `simulation`, read by consumers,
 never duplicated into YAML.
+
+### Addendum (2026-08-20, Feature 4b implemented) — measured, and one vacuous test caught
+
+Implementing the filter let the three predicted consequences be measured rather
+than reasoned about. Three drones, 20-tick mission in the 6x6 test room, filter
+disabled vs enabled:
+
+```
+filter OFF   phantom occupied cells = 0    poisoned height cells = 47
+filter ON    phantom occupied cells = 0    poisoned height cells =  0
+```
+
+The occupancy prediction was right in a way that matters for testing: a false
+occupied reading needs only 2-3 later free observations to wash out, and over a
+full mission every drone cell gets them — so **occupancy self-heals to zero even
+with the bug present**. A mission-level "no phantom obstacles" assertion is
+therefore *vacuous*: it passes with the filter off. It was written, measured,
+and deleted.
+
+The height layer is the discriminating signal, exactly as predicted, because
+`max(height, hit_z)` is monotonic. `test_master.py` asserts on height;
+single-scan occupancy — where the artifact is visible before it washes out — is
+asserted in the integration tests instead.
+
+Worth remembering as a testing lesson, not just a mapping one: a self-healing
+channel cannot carry a regression test for the thing it heals from.
+
+### Addendum (2026-09-06, PR #11 review) — the accepted cost was mis-stated
+
+A multi-agent review of PR #11 found the "accepted cost" recorded above to be
+wrong, and the correction is worth keeping because the mistake was a reasoning
+error, not a typo.
+
+**What I claimed:** a real wall inside the exclusion radius "stays unknown for
+the tick and is mapped on a later pass".
+
+**What actually happened:** the filtered ray was emitted as a MISS with
+`max_range = hit.distance`, and `Mapper._integrate_observation` marks a MISS
+free through its **endpoint** — `bresenham_2d` is endpoint-inclusive and the
+MISS branch has no `cells[:-1]` exclusion, unlike the HIT branch. So the
+discarded cell was not left unknown; it was claimed **free**. Verified: a wall
+cell replayed under a filtered ray reaches p = 0.3077 on the second observation
+and 0.0376 by the eighth.
+
+**Fix: stop the free trace at the ray's entry into the exclusion sphere**, not
+at the hit. The entry point is the last position on the ray that is provably
+unobstructed, so it is the furthest we may honestly claim. Head-on against a
+teammate 2.0 m away, the trace now stops at 1.70 m rather than 1.85 m.
+
+**But the map-level consequence was overstated, including by me.** The review
+argued this erodes real walls into free space, letting A\* plan through them —
+a Tier-1 collision violation. I could not reproduce that. Two geometries were
+tried: a teammate parked 0.2 m from a wall (2 of 360 rays are filtered wall
+hits), and a small pillar sitting inside the exclusion sphere. In both, the
+cell's classification was dominated by *other* rays — legitimate occupied hits
+in the wall case, discretization free-traces from adjacent rays in the pillar
+case — and came out the same with and without the fix. A regression test
+written for it passed under both behaviours and was deleted, for the same
+reason the phantom-occupancy test was.
+
+So: the fix is correct because claiming space you did not observe is wrong and
+the correct version costs nothing. It is **not** known to fix an observable
+map defect. The discriminating assertions are at the observation level.
+
+**Two blind spots the review's mutation testing found**, both of which passed
+the full suite before it:
+
+- Dropping the `other != drone_id` guard — a drone would filter *itself*,
+  blinding it within 0.30 m of its own centre, exactly the near-wall geometry
+  where it most needs to see.
+- Widening the radius 0.30 -> 0.50. The suite pinned the radius from below
+  (corner-on hits) but not from above, so it would silently discard every wall
+  hit near any drone.
+
+Both now have tests, as do "every teammate is checked, not just the first" and
+the 3D-vs-2D distance rationale, which was documented but untested.
+
+`exclusion_radius` is now validated in `__init__`: negatives are rejected
+(squaring silently turned -0.30 into +0.30), and so is any positive value below
+the 0.212 m body corner radius, since that re-admits the bug the filter exists
+to fix. Exactly 0.0 remains the deliberate, greppable opt-out.
+
+**One arithmetic correction:** a test docstring claimed a single free
+observation lands at p = 0.4001, just above `free_threshold`. That came from the
+rounded `# ~-0.405` comment. The exact value is `log(0.4/0.6)`, which *is* the
+log-odds of p = 0.4 — so one observation lands precisely **on** the threshold
+and only the strict `<` keeps the cell unclassified. There is no margin.
+
