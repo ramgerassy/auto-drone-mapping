@@ -28,8 +28,10 @@ pytestmark = pytest.mark.sprint(2)  # Feature 4b — perception teammate filter
 # The drone body geom is a box of half-extent 0.15, so a head-on ray stops
 # 0.15 m short of the teammate's centre.
 HALF_EXTENT = 0.15
+RADIUS = 0.30  # DRONE_EXCLUSION_RADIUS
 TEAMMATE_X = -2.0
-FACE_DISTANCE = abs(TEAMMATE_X) - HALF_EXTENT  # 1.85
+FACE_DISTANCE = abs(TEAMMATE_X) - HALF_EXTENT  # 1.85, where the ray stops
+ENTRY_DISTANCE = abs(TEAMMATE_X) - RADIUS  # 1.70, where the free trace stops
 
 
 def pose_at(x: float, y: float = 0.0, z: float = 1.0) -> Pose:
@@ -75,18 +77,22 @@ class TestTeammateHitsAreFiltered:
         assert obs.distance is None
         assert obs.hit_point is None
 
-    def test_range_is_shortened_to_the_teammate(self) -> None:
-        """Case 2: max_range becomes the hit distance, not the sensor rating.
+    def test_range_is_shortened_to_the_sphere_entry(self) -> None:
+        """Case 2: max_range is the exclusion-sphere entry, not the hit.
 
         This is what preserves the occlusion shadow — the mapper traces a MISS
-        to `max_range`, so it marks free space up to the teammate and makes no
-        claim about the space behind it.
+        to `max_range` and marks every cell free *including the endpoint*. So
+        the stop distance must be the last point provably traversed, which is
+        where the ray entered the sphere (1.70 m), not where it struck the body
+        (1.85 m). Stopping at the hit would write "free" over whatever was
+        actually there.
         """
         sensor = sensor_with(head_on_hit(), {1: pose_at(TEAMMATE_X)}, max_range=10.0)
 
         obs = sensor.scan(0).observations[0]
 
-        assert obs.max_range == pytest.approx(FACE_DISTANCE)
+        assert obs.max_range == pytest.approx(ENTRY_DISTANCE)
+        assert obs.max_range < FACE_DISTANCE
 
     def test_corner_on_hit_is_still_filtered(self) -> None:
         """Case 5: a hit at the box corner, 0.212 m off-centre, is caught.
@@ -152,13 +158,20 @@ class TestBoundaries:
         assert obs.distance is None
         assert obs.max_range == pytest.approx(10.0)
 
-    def test_wall_inside_the_exclusion_radius_is_discarded(self) -> None:
-        """Case 7: the accepted cost, pinned as known behaviour.
+    def test_wall_inside_the_exclusion_radius_is_discarded_not_overwritten(
+        self,
+    ) -> None:
+        """Case 7: the accepted cost, and the bound on how far it goes.
 
-        A real wall 0.25 m behind a teammate's centre is inside the 0.30 m
-        radius and is discarded with it. That cell stays unknown for this tick
-        and is mapped later from another vantage. Documented in
-        docs/progress.md as the price of a radial filter.
+        A real wall 0.25 m from a teammate's centre is inside the 0.30 m radius
+        and is discarded with it — that much is the accepted price of a radial
+        filter. What must NOT happen is the free trace running out to the wall:
+        the mapper marks a MISS free through its endpoint, so a stop distance of
+        2.25 would erode a real wall to free in two observations, and A* would
+        then plan through it.
+
+        The trace therefore stops at the sphere entry (1.70 m), well short of
+        the wall, which stays unknown until another vantage sees it.
         """
         wall = np.array([TEAMMATE_X - 0.25, 0.0, 1.0])
         hit = RayHit(distance=2.25, hit_point=wall, geom_id=3)
@@ -167,7 +180,83 @@ class TestBoundaries:
         obs = sensor.scan(0).observations[0]
 
         assert obs.distance is None
-        assert obs.max_range == pytest.approx(2.25)
+        assert obs.max_range == pytest.approx(ENTRY_DISTANCE)
+        assert obs.max_range < 2.25 - RADIUS  # never reaches the wall cell
+
+    def test_hit_just_outside_the_radius_survives(self) -> None:
+        """The radius is pinned from ABOVE as well as below.
+
+        `test_corner_on_hit_is_still_filtered` stops the radius shrinking;
+        without this one it could be widened arbitrarily (0.30 -> 0.50 passed
+        the whole suite) and silently discard every wall hit near any drone.
+        """
+        wall = np.array([TEAMMATE_X - 0.31, 0.0, 1.0])
+        hit = RayHit(distance=2.31, hit_point=wall, geom_id=3)
+        sensor = sensor_with(hit, {1: pose_at(TEAMMATE_X)}, max_range=10.0)
+
+        assert sensor.scan(0).observations[0].distance is not None
+
+    def test_sensing_drone_does_not_filter_itself(self) -> None:
+        """Only teammates are excluded — never the drone doing the scanning.
+
+        Dropping the `other != drone_id` guard passed the whole suite. The
+        consequence would be a drone blinded to everything within 0.30 m of its
+        own centre, which is exactly the near-wall geometry where it most needs
+        to see.
+        """
+        wall = np.array([-0.2, 0.0, 1.0])
+        hit = RayHit(distance=0.2, hit_point=wall, geom_id=3)
+        sensor = sensor_with(hit, {1: pose_at(-5.0)}, max_range=10.0)
+
+        assert sensor.scan(0).observations[0].distance is not None
+
+    def test_every_teammate_is_checked_not_just_the_first(self) -> None:
+        """Three drones, and the hit is on the LAST teammate.
+
+        Truncating the loop to `teammates[:1]` was caught only by a coordination
+        test, leaving a perception invariant guarded from another module.
+        """
+        sensor = sensor_with(
+            head_on_hit(),
+            {1: pose_at(5.0), 2: pose_at(7.0), 3: pose_at(TEAMMATE_X)},
+        )
+
+        assert sensor.scan(0).observations[0].distance is None
+
+    def test_teammate_directly_above_does_not_filter_a_floor_hit(self) -> None:
+        """The 3D test earns its keep: a 2D one would discard this wall.
+
+        The teammate shares the hit's (x, y) but flies 0.6 m higher, so it is
+        0.6 m away in 3D and must not shadow the hit. Slicing the distance to
+        (x, y) passed the whole suite before this test existed.
+        """
+        wall = np.array([TEAMMATE_X, 0.0, 1.0])
+        hit = RayHit(distance=2.0, hit_point=wall, geom_id=3)
+        sensor = sensor_with(hit, {1: pose_at(TEAMMATE_X, z=1.6)}, max_range=10.0)
+
+        assert sensor.scan(0).observations[0].distance is not None
+
+
+class TestRadiusValidation:
+    """A mis-set radius must fail loudly, not silently."""
+
+    def test_negative_radius_is_rejected(self) -> None:
+        """Squaring would turn -0.30 into +0.30 and look like it worked."""
+        with pytest.raises(ValueError, match="must be >= 0"):
+            sensor_with(None, exclusion_radius=-0.30)
+
+    def test_radius_below_the_corner_radius_is_rejected(self) -> None:
+        """0.20 clears the face distance but not the 0.212 corner."""
+        with pytest.raises(ValueError, match="below the body corner radius"):
+            sensor_with(None, exclusion_radius=0.20)
+
+    def test_zero_is_accepted_as_a_deliberate_disable(self) -> None:
+        """Exactly 0.0 is the greppable opt-out the tests rely on."""
+        sensor = sensor_with(
+            head_on_hit(), {1: pose_at(TEAMMATE_X)}, exclusion_radius=0.0
+        )
+
+        assert sensor.scan(0).observations[0].distance is not None
 
 
 class TestDeterminism:

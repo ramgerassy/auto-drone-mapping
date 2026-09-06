@@ -98,7 +98,15 @@ class FakeEngine:
         return list(self._drone_ids)
 
     def get_pose(self, drone_id: int) -> Pose:
-        """Return this drone's pose, or the shared fallback pose."""
+        """Return this drone's pose, or the shared fallback pose.
+
+        Once `poses` is given, an unknown id raises like the real engine does
+        rather than silently handing back the fallback — a multi-drone fake
+        that returns one drone's pose for another is a trap, not a shortcut.
+        """
+        if self._poses and drone_id not in self._poses:
+            msg = f"Unknown drone_id: {drone_id}"
+            raise KeyError(msg)
         return self._poses.get(drone_id, self._pose)
 
     def cast_rays(

@@ -139,6 +139,12 @@ discarded too. That cell stays unknown for the tick and is mapped on a later
 pass from a different vantage. Ground-truth poses are exact, so the radius
 absorbs body extent only — it carries no localization error.
 
+> **Corrected after the PR #11 review.** "Stays unknown" was only true once the
+> free trace was changed to stop at the ray's entry into the exclusion sphere.
+> As first written it stopped at the *hit*, and a MISS is traced free through
+> its endpoint — so the discarded cell was claimed free rather than left
+> unknown. See the 2026-09-06 addendum in `docs/progress.md`.
+
 ## Determinism
 
 Teammates are iterated in sorted id order. The test is a boolean any-match, so

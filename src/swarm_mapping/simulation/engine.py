@@ -12,9 +12,13 @@ from swarm_mapping.simulation.localizer import GroundTruthLocalizer
 from swarm_mapping.simulation.raycaster import MjRayCaster
 from swarm_mapping.simulation.types import Pose, RayHit
 
-# Physical drone geometry. Both the MJCF builder below and the consumers that
-# need to reason about the body (the perception teammate filter; planner
-# clearance) read these rather than repeating the literals.
+# Physical drone geometry, read by the MJCF builder below and by `perception`
+# (the teammate filter) rather than repeating the literals.
+#
+# `planning` must NOT import these: the dependency direction allows it to see
+# `mapping` only. Planner clearance (Feature 4c) has to receive the radius as a
+# parameter — from config, or passed down by `coordination`, which may legally
+# see both.
 DRONE_HALF_EXTENT = 0.15
 """Half-extent of the drone's body box, in metres (a 0.30 m square footprint)."""
 

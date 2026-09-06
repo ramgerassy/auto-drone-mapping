@@ -136,9 +136,11 @@ class TestFreeSpaceIsPreserved:
         """Case 11: the ray did travel that far unobstructed.
 
         Asserted against unknown (0.5) rather than the 0.4 `free_threshold`:
-        `log_odds_free = -0.405` puts a single free observation at p = 0.4001,
-        so one scan never crosses the classification bar by design. This cell
-        lies on the 0-degree ray alone, so it gets exactly one.
+        `log_odds_free = log(0.4/0.6)` is *exactly* the log-odds of p = 0.4, so
+        a single free observation lands precisely ON the threshold, not below
+        it — the strict `<` in the free test is the only thing keeping it
+        unclassified. There is no margin to assert against. This cell lies on
+        the 0-degree ray alone, so it gets exactly one observation.
         """
         mapper = map_one_scan(scene)
         prob = mapper.grid.probability()
