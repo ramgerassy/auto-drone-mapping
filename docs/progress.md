@@ -708,3 +708,36 @@ Break-even is `0.30/sqrt(2) = 0.21213`; the illustration now uses 0.2125. The
 to illustrate it — but it had been copied into `progress.md`, the feature doc
 and a test docstring, which is what a triplicated derivation always does.
 
+### Addendum — the two planner references
+
+The fix above left `CentralizedMaster` holding a planner that is also inside
+the strategy, with nothing tying them together. Documented at first; that was
+the weak option, because the failure is silent *and* asymmetric. A master whose
+planner has `clearance_radius=0.0` gets an all-False clearance mask, never drops
+a committed path, and restores the bug the re-check exists to prevent — with
+every test still green, since they all build both references from one variable.
+
+**Not fixed by widening `FrontierStrategy`.** The reason is not that seams are
+sacred: it is that a strategy scoring by expected information gain against
+straight-line distance has no planner, and the Protocol should not demand one.
+
+**Not fixed by making the mismatch impossible either**, though that option
+exists: `FrontierAssignment` could carry the planner that produced it, and the
+master could drop the argument entirely. Rejected for now because it changes the
+return type of a named seam, needs an Optional for planner-less strategies, and
+churns every `FrontierAssignment(...)` in the tests — to solve an aliasing
+problem that Feature 6 largely dissolves by constructing both from one config
+value.
+
+**Chosen: a duck-typed identity guard** in `CentralizedMaster.__init__`, reading
+an optional `planner` property. Costs one `getattr`, raises on the realistic
+mistake, and leaves strategies that plan nothing unaffected. Revisit when
+Feature 6 wires the config: at that point the guard becomes belt-and-braces and
+the assignment-carries-planner shape is the tidier end state.
+
+Worth naming the underlying smell rather than just the fix: what the master
+needs is not "the planner", it is "may the body occupy this cell" — a question
+about the **body**, not about the search algorithm. `clearance_mask` sitting on
+`PathPlanner` is that question answered by the wrong object. If a third consumer
+ever needs it, extracting a body/clearance model both depend on is the move.
+

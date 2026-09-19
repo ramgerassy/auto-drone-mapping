@@ -498,3 +498,41 @@ class TestProtocol:
         assert callable(coordinator.tick)
         assert coordinator.is_complete is False
         assert set(coordinator.drone_states) == {0}
+
+
+class TestPlannerConsistency:
+    """The master and the strategy must share one body model."""
+
+    def test_a_different_planner_than_the_strategy_is_rejected(
+        self, scene: Path
+    ) -> None:
+        """The silent direction is the dangerous one.
+
+        A master holding `clearance_radius=0.0` gets an all-False clearance
+        mask, never drops a committed path, and silently restores the bug the
+        re-check exists to prevent — with every other test still green, since
+        they build both references from one variable.
+        """
+        positions = {0: np.array([0.0, 0.0, ALTITUDE])}
+        engine = SimulationEngine(scene, positions)
+        mapper = Mapper(
+            MapConfig(
+                resolution=RESOLUTION,
+                origin_x=-3.0,
+                origin_y=-3.0,
+                grid_width=24,
+                grid_height=24,
+            )
+        )
+
+        with pytest.raises(ValueError, match="same object the strategy plans with"):
+            CentralizedMaster(
+                engine=engine,
+                sensor=Rangefinder(engine, num_rays=36, max_range=8.0),
+                mapper=mapper,
+                strategy=NearestFrontier(AStarPlanner(clearance_radius=CLEARANCE)),
+                planner=AStarPlanner(clearance_radius=0.0),  # a different object
+                altitude=ALTITUDE,
+                min_separation=MIN_SEPARATION,
+                max_wait_ticks=MAX_WAIT,
+            )

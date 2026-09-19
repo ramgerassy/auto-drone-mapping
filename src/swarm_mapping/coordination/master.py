@@ -85,6 +85,23 @@ class CentralizedMaster:
         self._engine = engine
         self._sensor = sensor
         self._mapper = mapper
+        # Two references to what must be one object. If they diverge, the
+        # strategy plans against one body model and committed paths are
+        # re-checked against another — and the quiet direction is the harmful
+        # one: a master holding a clearance of 0.0 gets an all-False mask and
+        # never drops a path, silently restoring the bug the re-check exists to
+        # prevent. Duck-typed rather than declared on the FrontierStrategy
+        # Protocol, so a strategy that plans nothing is not forced to invent a
+        # planner it does not have.
+        strategy_planner = getattr(strategy, "planner", None)
+        if strategy_planner is not None and strategy_planner is not planner:
+            msg = (
+                "planner must be the same object the strategy plans with; "
+                "otherwise selection and path re-validation disagree about "
+                "which cells the body may occupy, and a mismatch is silent."
+            )
+            raise ValueError(msg)
+
         self._strategy = strategy
         self._planner = planner
         self._altitude = altitude
