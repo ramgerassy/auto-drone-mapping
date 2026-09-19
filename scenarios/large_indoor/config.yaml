@@ -1,0 +1,54 @@
+# Large indoor scenario — 50m x 50m floor plan, corridor cross with 8 rooms.
+#
+# Sprint 2: the environment that makes coordination matter. Frontier-based
+# multi-drone exploration over this scene is wired up in Feature 6; the
+# `patrol` block below is a Sprint-1 holdover kept so the scenario loads and
+# renders with today's CLI (`--view`). Its waypoints stay inside the corridor
+# cross, because teleport movement would otherwise walk the drone through walls
+# and produce a map that means nothing.
+
+scene:
+  # Path relative to src/swarm_mapping/simulation/assets/
+  path: large_indoor.xml
+
+drone:
+  # The corridor crossing — the one point with clear line of sight down both
+  # corridors, and clear of every geom.
+  start_position: [0.0, 0.0, 1.0]
+
+sensor:
+  # Same Slamtec RPLIDAR A2M8 model as small_indoor: 360-degree 2D scanning
+  # LiDAR, 16 m rated. num_rays is that one sensor's angular samples per scan.
+  num_rays: 72        # 5-degree spacing
+  max_range: 12.0     # metres — operational cap ~25% below the 16 m rating
+
+map:
+  # resolution 0.2, NOT small_indoor's 0.1 — see docs/sprint-2/feature-5-*.md.
+  # At 0.1 this scene is 500x500 = 250k cells, where the clearance mask alone
+  # costs 6.0 ms per plan() call against 0.3 ms here, and plan() runs once per
+  # candidate frontier per re-selecting drone. That compounds past the CI
+  # budget CLAUDE.md sets for the suite.
+  #
+  # Every wall face in the MJCF lies on a 0.2 m lattice point, which is also a
+  # 0.1 m lattice point — so dropping to 0.1 needs no change to the geometry if
+  # Feature 6's acceptance run shows the accuracy margin is thin.
+  resolution: 0.2     # metres per cell
+  origin_x: -25.0     # grid covers -25 to +25 in x
+  origin_y: -25.0
+  grid_width: 250     # 50m / 0.2m
+  grid_height: 250
+  max_height: 3.0     # wall height, for PNG shading
+
+planning:
+  # The drone's body half-extent (0.15) plus a 0.05 m margin. At resolution 0.2
+  # this gives an inflation radius of 1 cell, so a gap must clear 2r+1 = 3
+  # cells plus one cell of discretization slop = 0.8 m. Every doorway in the
+  # scene is 1.2 m, so the scene survives this value rising to r = 2.
+  clearance_radius: 0.20
+
+patrol:
+  # Confined to the east-west corridor (interior y in [-1.6, 1.6]).
+  spacing: 2.0
+  altitude: 1.0
+  x_range: [-23, 23]
+  y_range: [-1, 1]
