@@ -233,16 +233,16 @@ class TestConfig:
     def test_config_extents_cover_the_whole_floor(self) -> None:
         """Grid extent, origin and the scene's 50 m floor must agree."""
         config = load_config(CONFIG)
-        map_cfg = config["map"]
+        map_cfg = config.map
 
-        assert map_cfg["grid_width"] * map_cfg["resolution"] == 50.0
-        assert map_cfg["grid_height"] * map_cfg["resolution"] == 50.0
-        assert map_cfg["origin_x"] == ORIGIN
-        assert map_cfg["origin_y"] == ORIGIN
-        assert config["scene"]["path"] == "large_indoor.xml"
+        assert map_cfg.grid_width * map_cfg.resolution == 50.0
+        assert map_cfg.grid_height * map_cfg.resolution == 50.0
+        assert map_cfg.origin_x == ORIGIN
+        assert map_cfg.origin_y == ORIGIN
+        assert config.scene_path == "large_indoor.xml"
 
     def test_config_clearance_matches_what_the_doorways_were_sized_for(self) -> None:
         """The scene's widths are only correct for this clearance value."""
         config = load_config(CONFIG)
 
-        assert config["planning"]["clearance_radius"] == CLEARANCE
+        assert config.planning.clearance_radius == CLEARANCE

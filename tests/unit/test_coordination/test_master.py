@@ -12,6 +12,7 @@ discriminating signal over a full mission.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import get_protocol_members
 
 import numpy as np
 import pytest
@@ -498,6 +499,30 @@ class TestProtocol:
         assert callable(coordinator.tick)
         assert coordinator.is_complete is False
         assert set(coordinator.drone_states) == {0}
+
+    def test_coordinator_requires_outcome_not_just_termination(self) -> None:
+        """Any coordinator must report *whether* it finished, not just *that*.
+
+        Asserted against the Protocol's declared members rather than against a
+        master instance: `CentralizedMaster` already has both properties, so
+        reading them through a `Coordinator`-annotated name would pass whether
+        or not the seam actually requires them. This is the assertion that
+        fails if someone narrows the Protocol back.
+        """
+        members = get_protocol_members(Coordinator)
+
+        assert "is_blocked" in members
+        assert "unreachable_frontiers" in members
+
+    def test_coordinator_outcome_is_readable_through_the_seam(
+        self, scene: Path
+    ) -> None:
+        """The outcome properties answer through a Coordinator-typed name."""
+        master, _, _ = build_master(scene, {0: (0.0, 0.0)})
+        coordinator: Coordinator = master
+
+        assert coordinator.is_blocked is False
+        assert coordinator.unreachable_frontiers == 0
 
 
 class TestPlannerConsistency:

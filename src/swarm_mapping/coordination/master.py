@@ -201,10 +201,19 @@ class CentralizedMaster:
     def is_blocked(self) -> bool:
         """True if the mission ended with frontiers still on the map.
 
-        Distinguishes a swarm that finished from one that was walled out — by
-        clearance, by an obstacle discovered across the only route, or by a
+        Reports that the swarm stopped with ground it could see but not reach —
+        walled out by clearance, by an obstacle across the only route, or by a
         mis-set radius. Without it a run that mapped 58% of a room and a run
         that mapped all of it are indistinguishable from the outside.
+
+        **Read it with `unreachable_frontiers` and coverage, not as pass/fail.**
+        Measured on `small_indoor`: a complete single-drone run terminates with
+        `is_blocked` True, 3 frontier regions left, and 98.1% coverage — every
+        unmapped cell inside an obstacle's footprint or in the wall margin that
+        `clearance_radius` refuses to enter. Inflation leaves wall-adjacent
+        frontiers visible but unoccupiable, so a *successful* mission normally
+        ends blocked. What separates that from a real failure is the magnitude:
+        3 regions at 98% is residue, 200 regions at 58% is a wall.
         """
         return self._blocked
 
