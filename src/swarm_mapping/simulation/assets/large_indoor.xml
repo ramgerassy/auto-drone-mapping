@@ -1,0 +1,129 @@
+<!--
+  Large indoor scenario: 50m x 50m floor plan, 3m walls (open top).
+
+  Coordinate system: the corridor crossing is at (0, 0, 0); the floor spans
+  x/y = -25 to +25.
+
+      +25 +-------------------------------------------+
+          |  NW-far    |     |         |    NE-far    |
+          |------D-----|     |         |-----D--------|
+          |  NW-near   |   N-S corridor|    NE-near   |
+          |            |     (3.2 m)   |              |
+          |=====D======|               |======D=======|
+          |                                           |  E-W corridor (3.2 m)
+          |=====D======|               |======D=======|
+          |  SW-near   |               |    SE-near   |
+          |------D-----|     |         |-----D--------|
+          |  SW-far    |     |         |    SE-far    |
+      -25 +-------------------------------------------+
+
+  Eight rooms, each reached through a doorway, off a corridor cross. A drone
+  must pass a constriction to explore anything — the behaviour small_indoor's
+  single open room cannot exercise.
+
+  DIMENSIONS ARE NOT ARBITRARY. Feature 4c measured that a gap must clear
+  `2r + 1` cells PLUS one cell of discretization slop: a wall face landing on a
+  cell boundary has its ray hit point attributed to the far cell, so the mapped
+  gap is one cell narrower than the real one. At resolution 0.2 with
+  clearance_radius 0.20 (r = 1) that floor is 4 cells / 0.8 m. Doorways here are
+  6 cells / 1.2 m and corridors 16 cells / 3.2 m, so the scene survives
+  clearance_radius rising to r = 2.
+
+  EVERY WALL FACE LIES ON A 0.2 m LATTICE POINT, which is also a 0.1 m lattice
+  point. A face at a half-cell offset is exactly what turned a 3-cell gap into
+  2 free cells in the 4c measurement. Geometry was generated from exact
+  rational arithmetic rather than typed, and tests/unit/test_simulation/
+  test_large_indoor.py re-asserts the lattice invariant against the parsed
+  model.
+
+  Box geom sizes are half-extents. Walls are 0.4 m thick (half-extent 0.2).
+
+  Drones are injected programmatically by SimulationEngine —
+  do not define drone bodies here.
+
+  Rendering follows small_indoor.xml: open top (no ceiling geom) so --view
+  looks down into the plan, opaque walls, two directional lights. The
+  rangefinder casts horizontal rays at flight altitude and never touched a
+  ceiling, so omitting it leaves the produced map identical.
+-->
+<mujoco model="large_indoor">
+  <option timestep="0.01" gravity="0 0 -9.81"/>
+
+  <!-- Default free-camera framing, as in small_indoor.xml: the passive viewer
+       otherwise opens at floor level. -->
+  <statistic center="0 0 1" extent="45"/>
+  <visual>
+    <headlight ambient="0.5 0.5 0.5" diffuse="0.45 0.45 0.45" specular="0 0 0"/>
+    <global azimuth="130" elevation="-55"/>
+  </visual>
+
+  <worldbody>
+    <!-- Directional lights: no positional falloff, so a 50 m floor has no
+         hotspot. Lights never collide — no effect on ray-casts or the map. -->
+    <light name="key" directional="true" pos="0 0 20" dir="0.2 0.3 -1"
+           diffuse="0.55 0.55 0.55" specular="0 0 0"/>
+    <light name="fill" directional="true" pos="15 15 20" dir="-0.5 -0.5 -1"
+           diffuse="0.35 0.35 0.35" specular="0 0 0"/>
+
+    <!-- Floor -->
+    <geom name="floor" type="plane" size="25 25 0.05"
+          rgba="0.75 0.75 0.78 1.0"/>
+
+    <!-- Walls and obstacles (generated; see the header) -->
+    <geom name="wall_north" type="box" pos="0 25 1.5"
+          size="25 0.2 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="wall_south" type="box" pos="0 -25 1.5"
+          size="25 0.2 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="wall_east" type="box" pos="25 0 1.5"
+          size="0.2 25 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="wall_west" type="box" pos="-25 0 1.5"
+          size="0.2 25 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="corr_n_1" type="box" pos="-16.5 1.8 1.5"
+          size="8.3 0.2 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="corr_n_2" type="box" pos="-4.4 1.8 1.5"
+          size="2.6 0.2 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="corr_n_3" type="box" pos="4.4 1.8 1.5"
+          size="2.6 0.2 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="corr_n_4" type="box" pos="16.5 1.8 1.5"
+          size="8.3 0.2 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="corr_s_1" type="box" pos="-16.5 -1.8 1.5"
+          size="8.3 0.2 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="corr_s_2" type="box" pos="-4.4 -1.8 1.5"
+          size="2.6 0.2 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="corr_s_3" type="box" pos="4.4 -1.8 1.5"
+          size="2.6 0.2 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="corr_s_4" type="box" pos="16.5 -1.8 1.5"
+          size="8.3 0.2 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="corr_e_1" type="box" pos="1.8 -13.3 1.5"
+          size="0.2 11.5 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="corr_e_2" type="box" pos="1.8 13.3 1.5"
+          size="0.2 11.5 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="corr_w_1" type="box" pos="-1.8 -13.3 1.5"
+          size="0.2 11.5 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="corr_w_2" type="box" pos="-1.8 13.3 1.5"
+          size="0.2 11.5 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="div_ne_1" type="box" pos="4.5 13 1.5"
+          size="2.5 0.2 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="div_ne_2" type="box" pos="16.5 13 1.5"
+          size="8.3 0.2 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="div_nw_1" type="box" pos="-16.5 13 1.5"
+          size="8.3 0.2 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="div_nw_2" type="box" pos="-4.5 13 1.5"
+          size="2.5 0.2 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="div_se_1" type="box" pos="4.5 -13 1.5"
+          size="2.5 0.2 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="div_se_2" type="box" pos="16.5 -13 1.5"
+          size="8.3 0.2 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="div_sw_1" type="box" pos="-16.5 -13 1.5"
+          size="8.3 0.2 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="div_sw_2" type="box" pos="-4.5 -13 1.5"
+          size="2.5 0.2 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="crate_ne" type="box" pos="17 19 0.4"
+          size="1 1 0.4" rgba="0.8 0.4 0.2 1.0"/>
+    <geom name="crate_nw" type="box" pos="-17 19 0.6"
+          size="0.8 0.6 0.6" rgba="0.8 0.4 0.2 1.0"/>
+    <geom name="crate_se" type="box" pos="17 -19 0.5"
+          size="0.6 1.2 0.5" rgba="0.8 0.4 0.2 1.0"/>
+    <geom name="crate_sw" type="box" pos="-17 -19 0.4"
+          size="1 1 0.4" rgba="0.8 0.4 0.2 1.0"/>  </worldbody>
+</mujoco>

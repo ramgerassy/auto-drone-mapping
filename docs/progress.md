@@ -741,3 +741,49 @@ about the **body**, not about the search algorithm. `clearance_mask` sitting on
 `PathPlanner` is that question answered by the wrong object. If a third consumer
 ever needs it, extracting a body/clearance model both depend on is the move.
 
+---
+
+## 2026-09-19 — Large indoor scenario (Sprint 2, Feature 5)
+
+**Resolution 0.2, not `small_indoor`'s 0.1.** Measured cost of one `plan()`
+call over a 50x50 m grid:
+
+```
+res=0.1   500x500 (250,000 cells)  r=2  mask= 6.0ms  plan= 6.9ms
+res=0.2   250x250  (62,500 cells)  r=1  mask= 0.3ms  plan= 3.1ms
+```
+
+The clearance mask is 20x more expensive at 0.1, because r = 2 means two
+dilations over a 500x500 array, and `plan()` runs once per candidate frontier
+per re-selecting drone. That compounds past the CI budget CLAUDE.md sets.
+
+Accepted cost: coarser cells classify wall-adjacent space less precisely, which
+bears on the >=98% per-cell accuracy KPI. Not self-defeating, since the
+reference map is produced at the same resolution — but if Feature 6's
+acceptance run shows the margin is thin, this is the lever.
+
+**Which is why every wall face sits on a 0.2 m lattice point — also a 0.1 m
+lattice point.** Dropping the resolution needs no geometry change. The
+alignment is not cosmetic either way: a face at a half-cell offset is exactly
+what turned a 3-cell gap into 2 free cells in the 4c measurement.
+
+**The geometry was generated from exact rational arithmetic, not typed.** 24
+wall segments with door gaps is enough arithmetic that a single transposed
+digit would produce a doorway one cell narrow — invisible in the MJCF, and
+surfacing much later as a room the swarm never enters. The generator asserted
+lattice alignment on every face before emitting; the committed tests re-assert
+it against the *parsed model*, since a test that greps XML proves nothing about
+what MuJoCo loaded.
+
+**The test worth having is reachability, not dimensions.** Eight room probes
+planned from the spawn with `clearance_radius=0.20`; all eight reachable.
+Verified non-vacuous by filling four cells of one jamb, taking that doorway
+from 6 cells to 2: both rooms behind it become unreachable while the rest of
+the plan is untouched. Measured widths: all eight doorways exactly 6 cells
+(1.2 m) against a 4-cell floor.
+
+The scene also runs end to end through the Sprint-1 CLI — 9.4% of cells known
+from a corridor-confined patrol, which is the expected figure when the rooms
+are never entered, and a useful baseline for what frontier exploration should
+beat in Feature 6.
+
