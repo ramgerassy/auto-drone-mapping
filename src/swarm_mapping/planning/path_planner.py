@@ -45,6 +45,18 @@ class PathPlanner(Protocol):
         """Return a path of cells from start to goal, or None if unreachable."""
         ...
 
+    def cost_lower_bound(self, start: Cell, goal: Cell) -> int:
+        """Return a cost no real path from `start` to `goal` can undercut.
+
+        Lets a consumer rank candidates before planning them and stop once the
+        bound exceeds the best score found. Declared on the planner rather than
+        computed by the caller because the bound has to match *this* planner's
+        cost model — a caller assuming 8-connected octile costs would silently
+        prune valid candidates from a planner that scores differently. Return 0
+        to disable pruning; it is always a legal answer.
+        """
+        ...
+
     def clearance_mask(self, grid: OccupancyGrid) -> NDArray[np.bool_]:
         """Return cells the drone's body may not occupy, indexed [row, col].
 
@@ -178,6 +190,27 @@ class AStarPlanner:
             The dilation radius in cells; 0 when the body fits within a cell.
         """
         return math.ceil(self._clearance_radius / resolution + 0.5) - 1
+
+    def cost_lower_bound(self, start: Cell, goal: Cell) -> int:
+        """The octile distance — the same metric this planner's heuristic uses.
+
+        Admissible by construction: an 8-connected path costs 10 per orthogonal
+        step and 14 per diagonal, so no route can beat the octile distance.
+        Clearance inflation only ever makes routes longer, never shorter, so
+        the bound holds with it too.
+
+        Args:
+            start: Start cell.
+            goal: Goal cell.
+
+        Returns:
+            The minimum possible path cost in the planner's integer units.
+        """
+        d_col = abs(start[0] - goal[0])
+        d_row = abs(start[1] - goal[1])
+        return _COST_ORTHOGONAL * max(d_col, d_row) + (
+            _COST_DIAGONAL - _COST_ORTHOGONAL
+        ) * min(d_col, d_row)
 
     def clearance_mask(self, grid: OccupancyGrid) -> NDArray[np.bool_]:
         """Cells the body may not occupy on this grid, indexed [row, col].

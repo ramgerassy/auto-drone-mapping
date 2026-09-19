@@ -54,11 +54,13 @@ def valid_config() -> dict[str, Any]:
             "clearance_radius": 0.20,
             "spread_radius": 0.0,
             "spread_penalty": 0,
+            "min_frontier_size": 2,
         },
         "coordination": {
             "min_separation": 0.5,
             "max_wait_ticks": 5,
             "max_ticks": 2000,
+            "no_progress_ticks": 200,
         },
     }
 
@@ -106,6 +108,7 @@ class TestValidConfig:
         assert config.planning.clearance_radius == 0.20
         assert config.planning.spread_radius == 0.0
         assert config.planning.spread_penalty == 0
+        assert config.planning.min_frontier_size == 2
         assert config.coordination.min_separation == 0.5
         assert config.coordination.max_wait_ticks == 5
         assert config.coordination.max_ticks == 2000

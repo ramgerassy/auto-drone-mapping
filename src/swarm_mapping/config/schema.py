@@ -205,11 +205,17 @@ class PlanningSettings:
         spread_radius: Radius in metres within which a candidate frontier is
             penalized for sitting near one already claimed.
         spread_penalty: Cost added to a candidate inside `spread_radius`.
+        min_frontier_size: Frontier regions with fewer cells are discarded as
+            noise. Wall-surface cells collect both free and occupied evidence
+            at grazing incidence and drift across the 0.4/0.6 classification
+            bands, so even a finished map emits a churn of 2-3 cell regions no
+            drone can clear. See `Mapper`.
     """
 
     clearance_radius: float
     spread_radius: float
     spread_penalty: int
+    min_frontier_size: int
 
 
 @dataclass(frozen=True)
@@ -222,11 +228,19 @@ class CoordinationSettings:
         max_wait_ticks: Consecutive blocked ticks after which a drone abandons
             its frontier, breaking head-on deadlocks.
         max_ticks: Safety cap on mission length. A blocked mission must end.
+        no_progress_ticks: Consecutive ticks without a newly classified cell
+            after which the mission stops. Wall-surface cells drift across the
+            classification bands and keep emitting small frontier regions, a
+            few of them transiently reachable, so a swarm with nothing left to
+            find can hold assignments indefinitely and never satisfy "every
+            drone unassigned". Measured on large_indoor: coverage is flat from
+            tick 2000 while the mission runs to its cap. 0 disables the check.
     """
 
     min_separation: float
     max_wait_ticks: int
     max_ticks: int
+    no_progress_ticks: int
 
 
 @dataclass(frozen=True)
@@ -383,6 +397,9 @@ def parse_config(raw: Any) -> ScenarioConfig:
             spread_penalty=_non_negative_int(
                 planning_section, "planning", "spread_penalty"
             ),
+            min_frontier_size=_non_negative_int(
+                planning_section, "planning", "min_frontier_size"
+            ),
         ),
         coordination=CoordinationSettings(
             min_separation=_non_negative(
@@ -392,5 +409,8 @@ def parse_config(raw: Any) -> ScenarioConfig:
                 coordination_section, "coordination", "max_wait_ticks"
             ),
             max_ticks=_positive_int(coordination_section, "coordination", "max_ticks"),
+            no_progress_ticks=_non_negative_int(
+                coordination_section, "coordination", "no_progress_ticks"
+            ),
         ),
     )

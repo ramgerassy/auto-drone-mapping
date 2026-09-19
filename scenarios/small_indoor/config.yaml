@@ -48,6 +48,7 @@ planning:
   clearance_radius: 0.20
   spread_radius: 0.0  # 0.0 disables spatial spreading; the room is small
   spread_penalty: 0   # enough that drones separate on distance alone
+  min_frontier_size: 2    # 2 = no filtering; raising it trades coverage for speed
 
 coordination:
   # Centre-to-centre, metres. Floored at the body diagonal
@@ -56,3 +57,4 @@ coordination:
   min_separation: 0.5
   max_wait_ticks: 5   # blocked ticks before a drone abandons its frontier
   max_ticks: 2000     # safety cap — a blocked mission must terminate
+  no_progress_ticks: 200   # stop once 200 ticks resolve no new cell

@@ -73,6 +73,7 @@ markers = [
     "regression: derived from sprint(n) — prior-sprint tests that must not break (PR gate)",
     "progression: derived from sprint(n) — current-sprint tests (per-commit gate)",
     "sanity: fast, minimal cross-module health check; keep it small and quick",
+    "acceptance: full-scenario runs with tolerance bands; minutes, not seconds. Selects COST, not era — acceptance tests still carry sprint(n). CI runs them on PRs to main (progression gate), never on push. Deselect locally with -m 'not acceptance'.",
 ]
 
 [tool.hatch.build.targets.wheel]

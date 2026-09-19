@@ -230,7 +230,8 @@ def build_mission(config: ScenarioConfig, drones: int | None = None) -> Mission:
             origin_y=config.map.origin_y,
             grid_width=config.map.grid_width,
             grid_height=config.map.grid_height,
-        )
+        ),
+        min_frontier_size=config.planning.min_frontier_size,
     )
 
     # One planner object, shared: the strategy plans with it and the master
@@ -253,6 +254,7 @@ def build_mission(config: ScenarioConfig, drones: int | None = None) -> Mission:
         altitude=config.drones.altitude,
         min_separation=config.coordination.min_separation,
         max_wait_ticks=config.coordination.max_wait_ticks,
+        no_progress_ticks=config.coordination.no_progress_ticks,
     )
 
     return Mission(engine=engine, mapper=mapper, master=master, config=config)

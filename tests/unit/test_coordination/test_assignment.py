@@ -53,6 +53,17 @@ def region(col: int, row: int, size: int = 3) -> FrontierRegion:
     return FrontierRegion(centroid=(col + 0.5, row + 0.5), cell=(col, row), size=size)
 
 
+def make_frontier(grid: OccupancyGrid, col: int, row: int) -> None:
+    """Make `(col, row)` a genuine frontier by leaving a neighbour unknown.
+
+    `assign_all` derives which targets are still live from the grid rather than
+    from the caller's region list, so a synthetic region over all-free space is
+    correctly treated as already explored. Tests about *other* rules therefore
+    have to give their regions real map state to stand on.
+    """
+    grid.log_odds[row, col + 1] = 0.0  # unknown
+
+
 def straight(start: Cell, goal_col: int) -> list[Cell]:
     """A horizontal path from start rightwards to goal_col."""
     col, row = start
@@ -83,6 +94,21 @@ def assignment_to(col: int, row: int, start: Cell) -> FrontierAssignment:
         region=region(col, row), path=path, cost=10 * (len(path) - 1)
     )
 
+
+class _EverythingLive:
+    """A live-frontier set containing every cell.
+
+    Used by tests that are not about frontier liveness, so a vanished target is
+    never the reason an assignment drops and each test keeps isolating the one
+    rule it names.
+    """
+
+    def __contains__(self, item: object) -> bool:
+        """Every cell is live."""
+        return True
+
+
+ALL_LIVE = _EverythingLive()
 
 PLANNER = AStarPlanner(clearance_radius=0.0)
 
@@ -124,7 +150,12 @@ class TestAssignmentValidity:
         grid = make_grid()
         a = assignment_to(4, 0, (0, 0))
         assert is_assignment_valid(
-            state(0, (1, 0), a, 1), grid.probability(), 0.4, MAX_WAIT, clear(grid)
+            state(0, (1, 0), a, 1),
+            grid.probability(),
+            0.4,
+            MAX_WAIT,
+            clear(grid),
+            ALL_LIVE,
         )
 
     def test_invalid_when_arrived(self) -> None:
@@ -132,7 +163,12 @@ class TestAssignmentValidity:
         grid = make_grid()
         a = assignment_to(4, 0, (0, 0))
         assert not is_assignment_valid(
-            state(0, (4, 0), a, 4), grid.probability(), 0.4, MAX_WAIT, clear(grid)
+            state(0, (4, 0), a, 4),
+            grid.probability(),
+            0.4,
+            MAX_WAIT,
+            clear(grid),
+            ALL_LIVE,
         )
 
     def test_invalid_when_next_cell_became_occupied(self) -> None:
@@ -141,7 +177,12 @@ class TestAssignmentValidity:
         grid.log_odds[0, 2] = OCC  # cell (2, 0) now blocked
         a = assignment_to(4, 0, (0, 0))
         assert not is_assignment_valid(
-            state(0, (1, 0), a, 1), grid.probability(), 0.4, MAX_WAIT, clear(grid)
+            state(0, (1, 0), a, 1),
+            grid.probability(),
+            0.4,
+            MAX_WAIT,
+            clear(grid),
+            ALL_LIVE,
         )
 
     def test_invalid_when_waited_too_long(self) -> None:
@@ -154,6 +195,7 @@ class TestAssignmentValidity:
             0.4,
             MAX_WAIT,
             clear(grid),
+            ALL_LIVE,
         )
 
 
@@ -192,6 +234,7 @@ class TestAssignAll:
     def test_existing_assignment_is_kept(self, strategy: NearestFrontier) -> None:
         """An in-progress path survives the next pass — no re-planning."""
         grid = make_grid()
+        make_frontier(grid, 6, 0)
         a = assignment_to(6, 0, (0, 0))
         states = {0: state(0, (2, 0), a, path_index=2)}
 
@@ -210,6 +253,7 @@ class TestAssignAll:
         prevents that.
         """
         grid = make_grid()
+        make_frontier(grid, 6, 0)
         held = assignment_to(6, 0, (0, 0))
         states = {
             9: state(9, (2, 0), held, path_index=2),
@@ -371,6 +415,7 @@ class TestCommittedPathsAreRechecked:
             0.4,
             MAX_WAIT,
             planner.clearance_mask(grid),
+            ALL_LIVE,
         )
 
         assert not keep
@@ -407,4 +452,5 @@ class TestCommittedPathsAreRechecked:
             0.4,
             MAX_WAIT,
             planner.clearance_mask(grid),
+            ALL_LIVE,
         )

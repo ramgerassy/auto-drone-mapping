@@ -57,6 +57,7 @@ planning:
   # selection time; the radius is roughly one room's width.
   spread_radius: 6.0
   spread_penalty: 40
+  min_frontier_size: 2    # 2 = no filtering; raising it trades coverage for speed
 
 coordination:
   # Centre-to-centre, metres. Floored at the body diagonal
@@ -65,4 +66,5 @@ coordination:
   min_separation: 0.5
   max_wait_ticks: 5   # blocked ticks before a drone abandons its frontier
   max_ticks: 4000     # safety cap — 250x250 cells and 8 rooms need more ticks
+  no_progress_ticks: 200   # stop once 200 ticks resolve no new cell
                       # than small_indoor; a blocked mission must still end.

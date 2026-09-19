@@ -63,6 +63,13 @@ class CentralizedMaster:
             enough separation for a drone body.
         max_wait_ticks: Consecutive blocked ticks after which a drone abandons
             its frontier and picks another, breaking head-on deadlocks.
+        no_progress_ticks: Consecutive ticks without a newly classified cell
+            after which the mission stops, reported as blocked. "Every drone
+            unassigned" is too strict a terminating condition on a large scene:
+            wall-surface cells drift across the classification bands and keep
+            emitting small frontier regions, a few transiently reachable, so a
+            swarm with nothing left to find never stops on its own. 0 disables
+            the check.
 
     Raises:
         ValueError: If the swarm is empty, if min_separation is not finite, is
@@ -81,6 +88,7 @@ class CentralizedMaster:
         altitude: float,
         min_separation: float,
         max_wait_ticks: int,
+        no_progress_ticks: int = 0,
     ) -> None:
         self._engine = engine
         self._sensor = sensor
@@ -106,6 +114,9 @@ class CentralizedMaster:
         self._planner = planner
         self._altitude = altitude
         self._max_wait_ticks = max_wait_ticks
+        self._no_progress_ticks = no_progress_ticks
+        self._stalled_for = 0
+        self._last_known = -1
 
         grid = mapper.grid
         # Every guard below is a `<` comparison and every comparison against
@@ -238,6 +249,36 @@ class CentralizedMaster:
         self._assign()
         self._move()
         self._tick_count += 1
+        self._check_progress()
+
+    def _check_progress(self) -> None:
+        """Stop the mission once it has gone `no_progress_ticks` without a gain.
+
+        Counts newly *classified* cells rather than visited ones: the mission's
+        product is the map, so a tick that resolves nothing achieved nothing,
+        whatever the drones did.
+        """
+        if self._no_progress_ticks <= 0:
+            return
+        prob = self._mapper.grid.probability()
+        known = int(np.count_nonzero((prob < 0.4) | (prob > 0.6)))
+        if known > self._last_known:
+            self._last_known = known
+            self._stalled_for = 0
+            return
+        self._stalled_for += 1
+        if self._stalled_for >= self._no_progress_ticks:
+            self._complete = True
+            self._blocked = True
+            self._unreachable_frontiers = len(self._mapper.get_frontiers())
+            _LOGGER.warning(
+                "mission_stalled",
+                extra={
+                    "tick": self._tick_count,
+                    "no_progress_ticks": self._no_progress_ticks,
+                    "unreachable_frontiers": self._unreachable_frontiers,
+                },
+            )
 
     def _sense(self) -> None:
         """Scan with every drone and fold the results into the shared map."""
