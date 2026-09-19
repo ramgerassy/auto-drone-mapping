@@ -85,7 +85,7 @@ def assignment_to(col: int, row: int, start: Cell) -> FrontierAssignment:
 @pytest.fixture
 def strategy() -> NearestFrontier:
     """A NearestFrontier over a real A* planner."""
-    return NearestFrontier(AStarPlanner())
+    return NearestFrontier(AStarPlanner(clearance_radius=0.0))
 
 
 class TestNextCell:

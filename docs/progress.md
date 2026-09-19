@@ -538,3 +538,69 @@ rounded `# ~-0.405` comment. The exact value is `log(0.4/0.6)`, which *is* the
 log-odds of p = 0.4 — so one observation lands precisely **on** the threshold
 and only the strict `<` keeps the cell unclassified. There is no margin.
 
+---
+
+## 2026-09-19 — Planner clearance implemented (Sprint 2, Feature 4c)
+
+The 2026-08-19 entry and its addendum specified this; what follows is what
+implementing it actually taught.
+
+**Shape as planned.** `AStarPlanner` gains a required `clearance_radius` in
+metres and inflates known-occupied cells by
+`r = ceil(clearance_radius/resolution + 0.5) - 1` cells of Chebyshev dilation,
+computed once per `plan()`. Unknown cells are never inflated. The start cell is
+exempt from the clearance test — and only that test — so a drone that discovers
+a wall beside itself can still plan its way out instead of silently ending the
+mission. `CentralizedMaster` gained the three guards: the body-diagonal floor
+on `min_separation`, pairwise start-position spacing, and a one-cell minimum.
+
+**D1 resolved: `clearance_radius` is a required keyword argument.** The finding
+this feature came from was that a body-size assumption went unstated; a
+required argument is the one form that cannot be left unstated. Seven call
+sites now say `clearance_radius=0.0` explicitly where they want a point robot.
+
+### The discretization tax on doorways — new, and it constrains Feature 5
+
+`2r + 1` cells of gap is **not** sufficient. A wall face that lands on a cell
+boundary has its ray hit point attributed to the cell on the far side, so the
+mapped obstacle is up to one cell wider than the wall. Measured on a 6x6 test
+room at `resolution` 0.25 with `r = 1`:
+
+```
+0.75 m gap (3 cells = 2r+1 exactly)  -> mapped as 2 free cells -> impassable
+1.25 m gap (5 cells)                 -> traversable; 558/576 cells mapped
+```
+
+So the rule for Feature 5's MJCF is **`2r + 1` cells plus a cell of slop**, and
+gaps should be cut on whole-cell boundaries where possible. A doorway sized to
+the theoretical minimum will map as one cell narrower than it is and refuse the
+drone. This is worth knowing before the 50x50 scene is drawn, not after.
+
+### A body-overlap assertion was written and discarded
+
+The plan's headline test was "no drone's body ever overlaps a known-occupied
+cell, every tick". It cannot be satisfied and does not mean what it sounds like:
+
+- At `resolution` 0.25 a 0.30 m body **always** overhangs its own cell by
+  0.025 m, wherever it sits. Any drone adjacent to an occupied cell trips the
+  check by construction.
+- An occupied *cell* is up to half a cell larger than the wall inside it. The
+  south wall's face at y = -2.9 belongs to row 0, but row 1 was also marked
+  occupied from a hit point rounding across the boundary.
+
+So the assertion measures grid discretization, not physical overlap — the
+±0.025 m it reported is exactly the overhang. It was also vacuous in the
+original test room, which is too open for a drone to ever approach a wall
+(measured worst gap +0.225 m with clearance both on and off).
+
+Replaced by the doorway pair above, which is discriminating: the narrow-door
+test fails with clearance disabled, and the wide-door test fails if unknown
+cells are inflated or the radius is one cell too large. Both mutations verified.
+
+This is the second time in two features that the obvious mission-level
+assertion turned out not to discriminate (see the 4b addendum). The pattern is
+worth naming: **a mission-level metric aggregates over so many rays, ticks and
+cells that a local defect usually washes out of it.** The assertion has to be
+placed where the defect is local — at the planner, at the observation — and the
+mission-level test is for *liveness*, not correctness.
+

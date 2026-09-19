@@ -16,8 +16,10 @@ glue that talks to the simulator.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from dataclasses import replace
+from itertools import combinations
 
 import numpy as np
 
@@ -27,7 +29,14 @@ from swarm_mapping.coordination.types import Cell, DroneState
 from swarm_mapping.mapping.mapper import Mapper
 from swarm_mapping.perception.protocols import Sensor
 from swarm_mapping.planning.frontier_strategy import FrontierStrategy
-from swarm_mapping.simulation.engine import SimulationEngine
+from swarm_mapping.simulation.engine import DRONE_HALF_EXTENT, SimulationEngine
+
+# `resolve_moves` is a RADIAL test, but the body is a square and
+# `L_inf <= L_2` — so a radial threshold only clears two axis-aligned boxes at
+# the circumscribed diameter. At dx = dy = 0.212 the Euclidean distance is 0.30,
+# passing a 0.30 m threshold, while the boxes overlap by ~0.09 m. The floor is
+# therefore the body diagonal, not the body width.
+MIN_SEPARATION_FLOOR = 2.0 * DRONE_HALF_EXTENT * math.sqrt(2.0)
 
 
 class CentralizedMaster:
@@ -45,6 +54,10 @@ class CentralizedMaster:
             enough separation for a drone body.
         max_wait_ticks: Consecutive blocked ticks after which a drone abandons
             its frontier and picks another, breaking head-on deadlocks.
+
+    Raises:
+        ValueError: If min_separation is below the body diagonal or below one
+            cell, or if two drones start closer together than min_separation.
     """
 
     def __init__(
@@ -65,7 +78,26 @@ class CentralizedMaster:
         self._max_wait_ticks = max_wait_ticks
 
         grid = mapper.grid
+        if min_separation < MIN_SEPARATION_FLOOR:
+            msg = (
+                f"min_separation {min_separation} m is below the body diagonal "
+                f"{MIN_SEPARATION_FLOOR:.4f} m. The separation test is radial "
+                "and the body is a square, so a smaller value permits diagonal "
+                "overlap while appearing to pass."
+            )
+            raise ValueError(msg)
+
         self._min_separation_cells = min_separation / grid.config.resolution
+        if self._min_separation_cells < 1.0:
+            msg = (
+                f"min_separation {min_separation} m is under one cell at "
+                f"resolution {grid.config.resolution} m. Reservations are "
+                "already seeded with each drone's current cell, so a sub-cell "
+                "radius can never block anything that seeding does not — the "
+                "parameter would be silently dead. It must span at least one "
+                "cell."
+            )
+            raise ValueError(msg)
 
         # Descending id order: the higher id has right of way, and precedence
         # only holds if it also drives processing order.
@@ -82,6 +114,22 @@ class CentralizedMaster:
                 path_index=0,
                 waited_ticks=0,
             )
+
+        # `resolve_moves` prevents new separation violations but never repairs
+        # an existing one: drones spawned inside each other's disc find every
+        # target blocked, exhaust max_wait_ticks, re-select, and stay frozen.
+        # That reads as a hang, so reject it at construction instead.
+        for first, second in combinations(self._ordered_ids, 2):
+            a = self._engine.get_pose(first).position
+            b = self._engine.get_pose(second).position
+            gap = float(np.hypot(a[0] - b[0], a[1] - b[1]))
+            if gap < min_separation:
+                msg = (
+                    f"drones {first} and {second} start {gap:.3f} m apart, "
+                    f"closer than min_separation {min_separation} m; they would "
+                    "deadlock immediately."
+                )
+                raise ValueError(msg)
 
         self._complete = False
         self._tick_count = 0

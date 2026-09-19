@@ -189,7 +189,7 @@ class TestWallAwareness:
         start = (0, 3)
         behind_wall = region(3, 3)  # centroid 3.0 m from the drone
         down_corridor = region(0, 7)  # centroid 4.0 m from the drone
-        strategy = NearestFrontier(AStarPlanner())
+        strategy = NearestFrontier(AStarPlanner(clearance_radius=0.0))
 
         result = strategy.select(grid, [down_corridor, behind_wall], start)
 
@@ -203,7 +203,7 @@ class TestWallAwareness:
         for r in range(8):  # full wall at col 4 splits the grid
             grid.log_odds[r, 4] = OCC
 
-        strategy = NearestFrontier(AStarPlanner())
+        strategy = NearestFrontier(AStarPlanner(clearance_radius=0.0))
         result = strategy.select(grid, [region(6, 6)], (0, 0))
 
         assert result is None
@@ -339,7 +339,7 @@ class TestProtocol:
 
     def test_nearest_frontier_is_a_frontier_strategy(self) -> None:
         """NearestFrontier is usable through the FrontierStrategy interface."""
-        s: FrontierStrategy = NearestFrontier(AStarPlanner())
+        s: FrontierStrategy = NearestFrontier(AStarPlanner(clearance_radius=0.0))
         assert callable(s.select)
 
     def test_assignment_is_frozen(self, free_grid: OccupancyGrid) -> None:

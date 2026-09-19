@@ -54,7 +54,7 @@ def all_free(grid: OccupancyGrid, path: list[tuple[int, int]]) -> bool:
 @pytest.fixture
 def planner() -> AStarPlanner:
     """A default A* planner (8-connected, octile, no corner-cutting)."""
-    return AStarPlanner()
+    return AStarPlanner(clearance_radius=0.0)
 
 
 class TestAStarPlanner:
@@ -161,5 +161,160 @@ class TestProtocol:
 
     def test_astar_is_a_pathplanner(self) -> None:
         """AStarPlanner is usable through the PathPlanner interface."""
-        p: PathPlanner = AStarPlanner()
+        p: PathPlanner = AStarPlanner(clearance_radius=0.0)
         assert callable(p.plan)
+
+
+class TestObstacleClearance:
+    """Feature 4c — the drone has a body, so a path must leave room for it.
+
+    `clearance_radius` is the drone's half-extent plus any safety margin, in
+    metres. An occupied cell at Chebyshev distance `k` has its near face at
+    `(k - 0.5) * resolution`, so no overlap requires
+    `(k - 0.5) * res >= clearance_radius`; the planner blocks everything nearer.
+
+    These grids use 1 m cells, so a 1.0 m clearance gives an inflation radius of
+    exactly one cell — `k_min = ceil(1.0/1.0 + 0.5) = 2`, so `r = 1`.
+    """
+
+    ONE_CELL = 1.0  # clearance_radius giving r = 1 on a 1 m grid
+
+    def blocked_grid(self) -> OccupancyGrid:
+        """An 8x8 free grid with a single obstacle at (4, 4)."""
+        grid = make_grid()
+        fill_free(grid)
+        grid.log_odds[4, 4] = OCC
+        return grid
+
+    @staticmethod
+    def hugs(path: list[tuple[int, int]], obstacle: tuple[int, int]) -> bool:
+        """True if any path cell is Chebyshev-adjacent to the obstacle."""
+        o_col, o_row = obstacle
+        return any(max(abs(col - o_col), abs(row - o_row)) <= 1 for col, row in path)
+
+    @pytest.mark.sanity
+    def test_zero_clearance_still_hugs_the_obstacle(self) -> None:
+        """Case 1: the control — with clearance off, nothing changes.
+
+        The pre-4c planner routes straight past the obstacle's face. This pins
+        that `clearance_radius` is what moves the path in the next test, rather
+        than some unrelated change to the search.
+        """
+        grid = self.blocked_grid()
+        path = AStarPlanner(clearance_radius=0.0).plan(grid, (1, 4), (7, 4))
+
+        assert path is not None
+        assert self.hugs(path, (4, 4))
+
+    def test_clearance_pushes_the_path_off_the_obstacle(self) -> None:
+        """Case 2: with a one-cell clearance the path keeps its distance."""
+        grid = self.blocked_grid()
+        path = AStarPlanner(clearance_radius=self.ONE_CELL).plan(grid, (1, 4), (7, 4))
+
+        assert path is not None
+        assert not self.hugs(path, (4, 4))
+        assert_contiguous(path)
+
+    def corridor_grid(self, free_rows: range) -> OccupancyGrid:
+        """Two open rooms joined by a corridor of the given free rows.
+
+        Rooms occupy cols 0-2 and 8-10 and are fully free; the wall spans
+        cols 3-7 with only `free_rows` left open.
+        """
+        grid = make_grid(width=11, height=7)
+        fill_free(grid)
+        for col in range(3, 8):
+            for row in range(7):
+                if row not in free_rows:
+                    grid.log_odds[row, col] = OCC
+        return grid
+
+    def test_corridor_narrower_than_the_body_is_impassable(self) -> None:
+        """Case 3: a 2-cell corridor needs 2r+1 = 3, so the route is refused.
+
+        Both free rows touch a wall, so both are inflated away. Returning None
+        is correct — the drone genuinely does not fit — and is what makes the
+        planner stop teleporting bodies through walls.
+        """
+        grid = self.corridor_grid(range(3, 5))  # rows 3-4, two cells tall
+
+        assert AStarPlanner(clearance_radius=0.0).plan(grid, (1, 3), (9, 3)) is not None
+        assert (
+            AStarPlanner(clearance_radius=self.ONE_CELL).plan(grid, (1, 3), (9, 3))
+            is None
+        )
+
+    def test_corridor_of_exactly_two_r_plus_one_still_passes(self) -> None:
+        """Case 4: a 3-cell corridor passes, down its centre line only.
+
+        Pins the radius from ABOVE. Without this, `r` could grow and quietly
+        make legal corridors impassable — the failure direction that would look
+        like "the map is just unexplorable" rather than like a bug.
+        """
+        grid = self.corridor_grid(range(2, 5))  # rows 2-4, three cells tall
+        path = AStarPlanner(clearance_radius=self.ONE_CELL).plan(grid, (1, 3), (9, 3))
+
+        assert path is not None
+        corridor_rows = {row for col, row in path if 3 <= col <= 7}
+        assert corridor_rows == {3}  # the centre line, the only legal one
+
+    def test_unknown_cells_are_not_inflated(self) -> None:
+        """Case 5: inflating unknown would halt exploration on tick 1.
+
+        A frontier is by definition a free cell adjacent to unknown space. If
+        unknown were inflated too, every frontier would be unreachable and the
+        mission would complete immediately over an empty map.
+        """
+        grid = make_grid()
+        fill_free(grid)
+        for row in range(8):  # a band of unmapped space
+            grid.log_odds[row, 6] = UNK
+        goal = (5, 4)  # free, but directly against the unknown band
+
+        path = AStarPlanner(clearance_radius=self.ONE_CELL).plan(grid, (1, 4), goal)
+
+        assert path is not None
+        assert path[-1] == goal
+
+    def test_start_inside_the_inflated_zone_can_still_escape(self) -> None:
+        """Case 6: the liveness escape hatch.
+
+        A drone that discovers a wall beside itself is suddenly inside its own
+        inflated zone. Without this exemption `plan()` returns None, the drone
+        gets no assignment, and if that holds for every drone the mission
+        reports completion over a half-unknown map. Exempting the start is safe
+        — the drone is already standing there.
+        """
+        grid = make_grid()
+        fill_free(grid)
+        grid.log_odds[1, 1] = OCC
+        start = (1, 2)  # free, but Chebyshev-adjacent to the obstacle
+
+        path = AStarPlanner(clearance_radius=self.ONE_CELL).plan(grid, start, (6, 6))
+
+        assert path is not None
+        assert path[0] == start
+        assert not self.hugs(path[1:], (1, 1))  # it leaves and does not return
+
+    def test_goal_inside_the_inflated_zone_is_unreachable(self) -> None:
+        """Case 7: the goal is not exempt — the drone would not fit there.
+
+        Correct rather than unfortunate: coverage counts cells *mapped*, not
+        cells *visited*, and the sensor maps that frontier from a cell the
+        drone can legally occupy.
+        """
+        grid = make_grid()
+        fill_free(grid)
+        grid.log_odds[1, 1] = OCC
+
+        assert (
+            AStarPlanner(clearance_radius=self.ONE_CELL).plan(grid, (6, 6), (1, 2))
+            is None
+        )
+
+    def test_inflation_is_deterministic(self) -> None:
+        """Case 8: same grid and radius, same path."""
+        grid = self.blocked_grid()
+        planner = AStarPlanner(clearance_radius=self.ONE_CELL)
+
+        assert planner.plan(grid, (1, 4), (7, 4)) == planner.plan(grid, (1, 4), (7, 4))

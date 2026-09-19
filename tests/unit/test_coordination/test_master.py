@@ -45,6 +45,8 @@ ALTITUDE = 1.0
 MIN_SEPARATION = 0.5  # metres
 MAX_WAIT = 5
 RESOLUTION = 0.25
+# Body half-extent 0.15 plus a 5 cm margin; at 0.25 m cells that is r = 1.
+CLEARANCE = 0.20
 
 
 @pytest.fixture
@@ -56,7 +58,10 @@ def scene(tmp_path: Path) -> Path:
 
 
 def build_master(
-    scene: Path, starts: dict[int, tuple[float, float]]
+    scene: Path,
+    starts: dict[int, tuple[float, float]],
+    min_separation: float = MIN_SEPARATION,
+    resolution: float = RESOLUTION,
 ) -> tuple[CentralizedMaster, SimulationEngine, Mapper]:
     """Wire an engine, sensor, mapper and master over the tiny room."""
     positions = {
@@ -67,20 +72,20 @@ def build_master(
     sensor = Rangefinder(engine, num_rays=36, max_range=8.0)
     mapper = Mapper(
         MapConfig(
-            resolution=RESOLUTION,
+            resolution=resolution,
             origin_x=-3.0,
             origin_y=-3.0,
-            grid_width=24,
-            grid_height=24,
+            grid_width=int(6 / resolution),
+            grid_height=int(6 / resolution),
         )
     )
     master = CentralizedMaster(
         engine=engine,
         sensor=sensor,
         mapper=mapper,
-        strategy=NearestFrontier(AStarPlanner()),
+        strategy=NearestFrontier(AStarPlanner(clearance_radius=CLEARANCE)),
         altitude=ALTITUDE,
-        min_separation=MIN_SEPARATION,
+        min_separation=min_separation,
         max_wait_ticks=MAX_WAIT,
     )
     return master, engine, mapper
@@ -241,6 +246,156 @@ class TestMapAccuracy:
                     poisoned.append((col, row))
 
         assert poisoned == []
+
+
+class TestSeparationGuards:
+    """Feature 4c — a mis-set separation must fail loudly, not silently.
+
+    `resolve_moves` is a radial test but the body is a square, and
+    `L_inf <= L_2`, so a radial threshold only clears two axis-aligned boxes at
+    the CIRCUMSCRIBED diameter. At dx = dy = 0.212 the Euclidean distance is
+    0.30 — passing a 0.30 m threshold — while the boxes overlap by ~0.09 m.
+    The floor is therefore 0.30 * sqrt(2) ~= 0.4243, not 0.30.
+    """
+
+    def test_separation_below_the_body_diagonal_is_rejected(self, scene: Path) -> None:
+        """Case 9: 0.35 m looks generous against a 0.30 m body and is not."""
+        with pytest.raises(ValueError, match="body diagonal"):
+            build_master(scene, {0: (-1.0, 0.0), 1: (1.0, 0.0)}, min_separation=0.35)
+
+    def test_separation_at_the_floor_is_accepted(self, scene: Path) -> None:
+        """Case 10: the guard rejects only what it must."""
+        master, _, _ = build_master(
+            scene, {0: (-1.0, 0.0), 1: (1.0, 0.0)}, min_separation=0.4243
+        )
+
+        assert set(master.drone_states) == {0, 1}
+
+    def test_start_positions_closer_than_separation_are_rejected(
+        self, scene: Path
+    ) -> None:
+        """Case 11: `resolve_moves` prevents new violations, never repairs one.
+
+        Two drones spawned inside each other's disc find every target blocked,
+        burn through `max_wait_ticks`, re-select, and stay frozen — a permanent
+        deadlock that comes from config alone and looks like a hang.
+        """
+        with pytest.raises(ValueError, match="start"):
+            build_master(scene, {0: (0.0, 0.0), 1: (0.3, 0.0)})
+
+    def test_separation_below_one_cell_is_rejected(self, scene: Path) -> None:
+        """Case 12: below a cell the radial check is dead code.
+
+        `resolve_moves` already seeds reservations withevery drone's current cell,
+        so a sub-cell radius can never block anything that seeding does not.
+        Silently dead safety parameters are worse than absent ones.
+        """
+        with pytest.raises(ValueError, match="at least one cell"):
+            build_master(scene, {0: (-2.0, 0.0), 1: (2.0, 0.0)}, resolution=1.0)
+
+
+# A room split by a divider with a doorway. Geometry is aligned to whole cells:
+# divider_n spans y in [0.75, 3.0], divider_s spans y in [-3.0, -0.50], leaving
+# a 1.25 m (5-cell) gap. The narrow variant leaves 0.75 m (3 cells).
+def doorway_xml(gap_south: float, gap_north: float) -> str:
+    """A 6x6 room split at x=0 by a divider with a gap of the given extent."""
+    south_half = (gap_south + 3.0) / 2.0
+    north_half = (3.0 - gap_north) / 2.0
+    return f"""\
+<mujoco model="doorway">
+  <option timestep="0.01" gravity="0 0 -9.81"/>
+  <worldbody>
+    <geom name="floor" type="plane" size="3 3 0.05"/>
+    <geom name="wall_east" type="box" pos="3 0 1" size="0.1 3 1"/>
+    <geom name="wall_west" type="box" pos="-3 0 1" size="0.1 3 1"/>
+    <geom name="wall_north" type="box" pos="0 3 1" size="3 0.1 1"/>
+    <geom name="wall_south" type="box" pos="0 -3 1" size="3 0.1 1"/>
+    <geom name="divider_n" type="box" pos="0 {gap_north + north_half} 1"
+          size="0.25 {north_half} 1"/>
+    <geom name="divider_s" type="box" pos="0 {gap_south - south_half} 1"
+          size="0.25 {south_half} 1"/>
+  </worldbody>
+</mujoco>
+"""
+
+
+class TestConstrainedPassage:
+    """Feature 4c — clearance decides which gaps the body may fly through.
+
+    The mission-level counterpart to the planner's corridor-width tests. A
+    "body never overlaps a wall" assertion was written first and discarded: at
+    `resolution` 0.25 a 0.30 m body overhangs its own cell by 0.025 m no matter
+    where it sits, and an occupied *cell* is up to half a cell larger than the
+    wall inside it, so such an assertion measures grid discretization rather
+    than physical overlap. See docs/progress.md.
+    """
+
+    def run_doorway(
+        self, tmp_path: Path, gap_south: float, gap_north: float
+    ) -> tuple[bool, float]:
+        """Fly one drone from the west room; report whether it got through."""
+        path = tmp_path / f"door_{gap_south}_{gap_north}.xml"
+        path.write_text(doorway_xml(gap_south, gap_north))
+
+        engine = SimulationEngine(path, {0: np.array([-2.0, 0.0, ALTITUDE])})
+        mapper = Mapper(
+            MapConfig(
+                resolution=RESOLUTION,
+                origin_x=-3.0,
+                origin_y=-3.0,
+                grid_width=24,
+                grid_height=24,
+            )
+        )
+        master = CentralizedMaster(
+            engine=engine,
+            sensor=Rangefinder(engine, num_rays=72, max_range=8.0),
+            mapper=mapper,
+            strategy=NearestFrontier(AStarPlanner(clearance_radius=CLEARANCE)),
+            altitude=ALTITUDE,
+            min_separation=MIN_SEPARATION,
+            max_wait_ticks=MAX_WAIT,
+        )
+
+        crossed = False
+        while not master.is_complete and master.tick_count < 200:
+            master.tick()
+            for state in master.drone_states.values():
+                if mapper.grid.grid_to_world(*state.cell)[0] > 0.5:
+                    crossed = True
+
+        prob = mapper.grid.probability()
+        known = float(np.sum((prob < 0.4) | (prob > 0.6))) / prob.size
+        return crossed, known
+
+    def test_a_wide_doorway_is_flown_through(self, tmp_path: Path) -> None:
+        """Case 13 (liveness): inflation must not wall off reachable space.
+
+        A 1.25 m gap is five cells, comfortably over the `2r + 1 = 3` the body
+        needs. The drone crosses and maps both rooms — the check that clearance
+        has not made the environment unexplorable, which is how "inflate
+        unknown cells too" or an oversized radius would fail.
+        """
+        crossed, known = self.run_doorway(tmp_path, gap_south=-0.5, gap_north=0.75)
+
+        assert crossed
+        assert known > 0.9
+
+    def test_a_doorway_the_body_cannot_fit_is_refused(self, tmp_path: Path) -> None:
+        """The width rule, pinned — and the tax Feature 5's MJCF must pay.
+
+        A 0.75 m gap is three cells, which is `2r + 1` exactly and looks
+        sufficient. It is not: the divider's face lands on a cell boundary and
+        the hit point is attributed to the cell above it, so one row of the gap
+        is mapped as occupied and only two remain. The usable width must clear
+        `2r + 1` cells **plus a cell of discretization slop**.
+
+        Refusing to cross is correct behaviour — before 4c the drone flew
+        through with its body inside the jamb.
+        """
+        crossed, _ = self.run_doorway(tmp_path, gap_south=-0.25, gap_north=0.5)
+
+        assert not crossed
 
 
 class TestDeterminism:
