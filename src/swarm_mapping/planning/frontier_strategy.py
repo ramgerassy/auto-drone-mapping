@@ -96,6 +96,18 @@ class NearestFrontier:
         self._spread_radius = spread_radius
         self._spread_penalty = spread_penalty
 
+    @property
+    def planner(self) -> PathPlanner:
+        """The planner this strategy routes with.
+
+        Read by `CentralizedMaster` to check that the planner it re-validates
+        committed paths against is the one that planned them. Deliberately NOT
+        on the `FrontierStrategy` Protocol: a strategy scoring by expected
+        information gain against straight-line distance would have no planner
+        to expose, and the seam should not demand one.
+        """
+        return self._planner
+
     def select(
         self,
         grid: OccupancyGrid,

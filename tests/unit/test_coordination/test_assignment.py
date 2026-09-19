@@ -8,7 +8,9 @@ Cells are (col, row); the log_odds array is [row, col].
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
+from numpy.typing import NDArray
 
 from swarm_mapping.coordination.assignment import (
     assign_all,
@@ -82,10 +84,18 @@ def assignment_to(col: int, row: int, start: Cell) -> FrontierAssignment:
     )
 
 
+PLANNER = AStarPlanner(clearance_radius=0.0)
+
+
 @pytest.fixture
 def strategy() -> NearestFrontier:
     """A NearestFrontier over a real A* planner."""
-    return NearestFrontier(AStarPlanner())
+    return NearestFrontier(PLANNER)
+
+
+def clear(grid: OccupancyGrid) -> NDArray[np.bool_]:
+    """A clearance mask with nothing blocked (these tests use a point robot)."""
+    return PLANNER.clearance_mask(grid)
 
 
 class TestNextCell:
@@ -114,7 +124,7 @@ class TestAssignmentValidity:
         grid = make_grid()
         a = assignment_to(4, 0, (0, 0))
         assert is_assignment_valid(
-            state(0, (1, 0), a, 1), grid.probability(), 0.4, MAX_WAIT
+            state(0, (1, 0), a, 1), grid.probability(), 0.4, MAX_WAIT, clear(grid)
         )
 
     def test_invalid_when_arrived(self) -> None:
@@ -122,7 +132,7 @@ class TestAssignmentValidity:
         grid = make_grid()
         a = assignment_to(4, 0, (0, 0))
         assert not is_assignment_valid(
-            state(0, (4, 0), a, 4), grid.probability(), 0.4, MAX_WAIT
+            state(0, (4, 0), a, 4), grid.probability(), 0.4, MAX_WAIT, clear(grid)
         )
 
     def test_invalid_when_next_cell_became_occupied(self) -> None:
@@ -131,7 +141,7 @@ class TestAssignmentValidity:
         grid.log_odds[0, 2] = OCC  # cell (2, 0) now blocked
         a = assignment_to(4, 0, (0, 0))
         assert not is_assignment_valid(
-            state(0, (1, 0), a, 1), grid.probability(), 0.4, MAX_WAIT
+            state(0, (1, 0), a, 1), grid.probability(), 0.4, MAX_WAIT, clear(grid)
         )
 
     def test_invalid_when_waited_too_long(self) -> None:
@@ -143,6 +153,7 @@ class TestAssignmentValidity:
             grid.probability(),
             0.4,
             MAX_WAIT,
+            clear(grid),
         )
 
 
@@ -155,7 +166,7 @@ class TestAssignAll:
         grid = make_grid()
         states = {0: state(0, (0, 0))}
 
-        result = assign_all(grid, [region(5, 0)], states, strategy, MAX_WAIT)
+        result = assign_all(grid, [region(5, 0)], states, strategy, PLANNER, MAX_WAIT)
 
         assert result[0].assignment is not None
         assert result[0].assignment.region.cell == (5, 0)
@@ -169,7 +180,7 @@ class TestAssignAll:
         states = {0: state(0, (0, 0)), 1: state(1, (0, 5))}
 
         result = assign_all(
-            grid, [region(6, 0), region(6, 5)], states, strategy, MAX_WAIT
+            grid, [region(6, 0), region(6, 5)], states, strategy, PLANNER, MAX_WAIT
         )
 
         first = result[0].assignment
@@ -184,7 +195,7 @@ class TestAssignAll:
         a = assignment_to(6, 0, (0, 0))
         states = {0: state(0, (2, 0), a, path_index=2)}
 
-        result = assign_all(grid, [region(6, 0)], states, strategy, MAX_WAIT)
+        result = assign_all(grid, [region(6, 0)], states, strategy, PLANNER, MAX_WAIT)
 
         assert result[0].assignment is a
         assert result[0].path_index == 2  # progress preserved
@@ -206,7 +217,7 @@ class TestAssignAll:
         }
 
         result = assign_all(
-            grid, [region(6, 0), region(0, 9)], states, strategy, MAX_WAIT
+            grid, [region(6, 0), region(0, 9)], states, strategy, PLANNER, MAX_WAIT
         )
 
         assert result[9].assignment is held
@@ -219,7 +230,7 @@ class TestAssignAll:
         arrived = assignment_to(3, 0, (0, 0))
         states = {0: state(0, (3, 0), arrived, path_index=3)}
 
-        result = assign_all(grid, [region(9, 9)], states, strategy, MAX_WAIT)
+        result = assign_all(grid, [region(9, 9)], states, strategy, PLANNER, MAX_WAIT)
 
         assert result[0].assignment is not None
         assert result[0].assignment.region.cell == (9, 9)
@@ -229,7 +240,7 @@ class TestAssignAll:
         grid = make_grid()
         states = {0: state(0, (0, 0))}
 
-        result = assign_all(grid, [], states, strategy, MAX_WAIT)
+        result = assign_all(grid, [], states, strategy, PLANNER, MAX_WAIT)
 
         assert result[0].assignment is None
 
@@ -242,7 +253,7 @@ class TestAssignAll:
             grid.log_odds[row, 6] = OCC
         states = {0: state(0, (0, 0))}
 
-        result = assign_all(grid, [region(9, 0)], states, strategy, MAX_WAIT)
+        result = assign_all(grid, [region(9, 0)], states, strategy, PLANNER, MAX_WAIT)
 
         assert result[0].assignment is None
 
@@ -256,7 +267,7 @@ class TestDeadlockEscape:
         stuck = assignment_to(6, 0, (0, 0))
         states = {0: state(0, (1, 0), stuck, 1, waited_ticks=MAX_WAIT + 1)}
 
-        result = assign_all(grid, [region(6, 0)], states, strategy, MAX_WAIT)
+        result = assign_all(grid, [region(6, 0)], states, strategy, PLANNER, MAX_WAIT)
 
         assert result[0].waited_ticks == 0  # counter reset on re-selection
 
@@ -273,7 +284,7 @@ class TestDeadlockEscape:
         }
 
         result = assign_all(
-            grid, [region(6, 0), region(1, 9)], states, strategy, MAX_WAIT
+            grid, [region(6, 0), region(1, 9)], states, strategy, PLANNER, MAX_WAIT
         )
 
         assert result[0].assignment is not None
@@ -289,8 +300,8 @@ class TestDeterminism:
         states = {0: state(0, (0, 0)), 1: state(1, (0, 5))}
         frontiers = [region(6, 0), region(6, 5)]
 
-        first = assign_all(grid, frontiers, states, strategy, MAX_WAIT)
-        second = assign_all(grid, frontiers, states, strategy, MAX_WAIT)
+        first = assign_all(grid, frontiers, states, strategy, PLANNER, MAX_WAIT)
+        second = assign_all(grid, frontiers, states, strategy, PLANNER, MAX_WAIT)
 
         assert first == second
 
@@ -300,7 +311,100 @@ class TestDeterminism:
         original = state(0, (0, 0))
         states = {0: original}
 
-        assign_all(grid, [region(5, 0)], states, strategy, MAX_WAIT)
+        assign_all(grid, [region(5, 0)], states, strategy, PLANNER, MAX_WAIT)
 
         assert states[0] is original
         assert original.assignment is None
+
+
+class TestCommittedPathsAreRechecked:
+    """A committed path must be re-checked against the planner's body model.
+
+    Paths are deliberately kept rather than re-planned each tick, so this test
+    is the only thing between a committed route and a changed map. It used to
+    check `prob` alone, which cannot see clearance — and that is not an edge
+    case: A* routes only through known-free cells, so a wall discovered later
+    was *unknown* when the path was planned and is never itself on it. Only its
+    inflation zone touches the path, over cells that were free and stay free.
+    """
+
+    def wall_scenario(self) -> tuple[OccupancyGrid, AStarPlanner, list[Cell]]:
+        """Plan along row 1 while row 0 is still unmapped, then reveal a wall."""
+        grid = OccupancyGrid(
+            MapConfig(
+                resolution=0.1,
+                origin_x=0.0,
+                origin_y=0.0,
+                grid_width=12,
+                grid_height=6,
+            )
+        )
+        grid.log_odds[:] = FREE
+        grid.log_odds[0, :] = 0.0  # unknown: no wall to inflate yet
+
+        planner = AStarPlanner(clearance_radius=0.20)  # r = 2 at 0.1 m cells
+        path = planner.plan(grid, (1, 1), (7, 1))
+        assert path is not None  # the case is what we think it is
+
+        grid.log_odds[0, :] = OCC  # the scan reveals a wall
+        return grid, planner, path
+
+    def held(self, path: list[Cell]) -> DroneState:
+        """A drone one step into the given path."""
+        return state(
+            0,
+            (1, 1),
+            FrontierAssignment(
+                region=region(7, 1), path=path, cost=10 * (len(path) - 1)
+            ),
+            path_index=0,
+        )
+
+    @pytest.mark.sanity
+    def test_path_is_dropped_when_a_wall_appears_beside_it(self) -> None:
+        """The whole point: the drone re-plans instead of flying into the jamb."""
+        grid, planner, path = self.wall_scenario()
+
+        keep = is_assignment_valid(
+            self.held(path),
+            grid.probability(),
+            0.4,
+            MAX_WAIT,
+            planner.clearance_mask(grid),
+        )
+
+        assert not keep
+
+    def test_the_free_check_alone_would_have_kept_it(self) -> None:
+        """Pins WHY the clearance mask is a separate parameter.
+
+        Every cell on the path is still free after the wall appears, so the
+        pre-existing `prob < free_threshold` test cannot catch this. Without
+        this assertion someone could delete the mask argument as redundant.
+        """
+        grid, planner, path = self.wall_scenario()
+        prob = grid.probability()
+
+        next_step = path[1]
+        assert prob[next_step[1], next_step[0]] < 0.4  # still free
+        assert planner.clearance_mask(grid)[next_step[1], next_step[0]]  # but illegal
+
+    def test_replanning_now_agrees_it_is_illegal(self) -> None:
+        """The planner and the keep-alive test must not disagree."""
+        grid, planner, _ = self.wall_scenario()
+
+        assert planner.plan(grid, (1, 1), (7, 1)) is None
+
+    def test_a_path_clear_of_the_wall_is_kept(self) -> None:
+        """The check rejects only what it must — no blanket re-planning."""
+        grid = make_grid()
+        planner = AStarPlanner(clearance_radius=0.0)
+        a = assignment_to(6, 0, (0, 0))
+
+        assert is_assignment_valid(
+            state(0, (1, 0), a, 1),
+            grid.probability(),
+            0.4,
+            MAX_WAIT,
+            planner.clearance_mask(grid),
+        )
