@@ -407,8 +407,12 @@ knob at all. But it is a correctly-shaped knob with no correct default.
 radial; the body is an axis-aligned box. Two such boxes overlap iff
 `max(|dx|, |dy|) < 2h`, a Chebyshev condition, and `L_inf <= L_2` always — so
 passing a radial test does *not* imply the boxes are clear. Take
-`dx = dy = 0.212`: Euclidean distance is 0.30 (passes a 0.30 m threshold) while
-Chebyshev is 0.212, so the boxes overlap by ~0.09 m. A diagonal approach slips
+`dx = dy = 0.2125`: Euclidean distance is 0.3005 (passes a 0.30 m threshold)
+while Chebyshev is 0.2125, so the boxes overlap by 0.0875 m. (Corrected
+2026-09-19: this originally read `0.212`, whose Euclidean distance is 0.29981
+and therefore *fails* a 0.30 m threshold — the break-even is
+`0.30/sqrt(2) = 0.21213`. The conclusion was unaffected; the illustration was
+wrong.) A diagonal approach slips
 straight through. Making a radial test safe for a square body requires the
 **circumscribed** diameter, `2h * sqrt(2) = 0.30 * sqrt(2) ~= 0.424 m`. The
 tests' 0.5 m clears it; anything between 0.30 and 0.424 would look reasonable
@@ -584,9 +588,11 @@ cell, every tick". It cannot be satisfied and does not mean what it sounds like:
 - At `resolution` 0.25 a 0.30 m body **always** overhangs its own cell by
   0.025 m, wherever it sits. Any drone adjacent to an occupied cell trips the
   check by construction.
-- An occupied *cell* is up to half a cell larger than the wall inside it. The
-  south wall's face at y = -2.9 belongs to row 0, but row 1 was also marked
-  occupied from a hit point rounding across the boundary.
+- An occupied *cell* is up to half a cell larger than the wall inside it,
+  because a ray hit point on a cell boundary is attributed to one side of it.
+  The doorway measurement above is the evidence: the divider's face at
+  y = -0.25 sits exactly on the row 10/11 boundary and row 11 maps as occupied,
+  which is what turns a 3-cell gap into 2 free cells.
 
 So the assertion measures grid discretization, not physical overlap — the
 ±0.025 m it reported is exactly the overhang. It was also vacuous in the
@@ -603,4 +609,102 @@ worth naming: **a mission-level metric aggregates over so many rays, ticks and
 cells that a local defect usually washes out of it.** The assertion has to be
 placed where the defect is local — at the planner, at the observation — and the
 mission-level test is for *liveness*, not correctness.
+
+### Addendum (2026-09-19, PR #12 review) — clearance held at plan time only
+
+A four-agent review of PR #12 found twenty issues; all were reproduced before
+being acted on. Three changed the design rather than the code around it.
+
+**1. The feature's guarantee was plan-time only.** `is_assignment_valid` tested
+`prob < free_threshold` and nothing else, so a committed path survived the
+discovery of a wall beside it:
+
+```
+planned while row 0 was unknown: [(1,1) ... (7,1)]
+after discovery, re-planning returns: None
+is_assignment_valid said:            KEEP
+```
+
+The drone flew a route the planner called illegal — the exact pre-4c bug. And
+this is the **normal** exploration case: A\* routes only through known-free
+cells, so a wall discovered later was unknown at plan time and is never itself
+on the path; only its inflation zone touches path cells, which were free and
+stay free.
+
+The root cause is a Feature 4 decision that 4c invalidated without noticing.
+`assignment.py` justified keeping paths rather than re-planning because "a path
+stays valid unless a cell it crosses stops being free, which is exactly the
+check below". True before 4c; false after it, because 4c added a second way for
+a path to become invalid. **`PathPlanner` now exposes `clearance_mask`, and
+`assign_all` re-checks committed paths against it** — one definition of a legal
+cell serving both plan time and keep-alive time, rather than `coordination`
+re-implementing the body model and drifting.
+
+**2. The start-cell exemption only worked at `r = 1`.** Exempting the start is
+useless when every *neighbour* is inflated too, which is the case at `r >= 2` —
+and `resolution: 0.1` with a 0.20 m clearance gives exactly `r = 2`. The
+liveness property was untested at the radius the project will deploy, and did
+not hold there. Replaced by an escape *phase*: while the search is inside the
+zone it may move through it; once it reaches open ground it may not re-enter.
+Escaping is allowed, loitering is not.
+
+**3. `is_complete` could not tell "explored" from "walled out".** Both end with
+every drone unassigned. The distinguishing signal was already being computed in
+`_assign` and thrown away — the frontier count. Added `is_blocked` and
+`unreachable_frontiers`:
+
+```
+wide doorway (5 cells)   complete=True blocked=False unreachable=0 known=96.9%
+narrow doorway (3 cells) complete=True blocked=True  unreachable=2 known=58.0%
+```
+
+Deliberately **not** added to the `Coordinator` Protocol — that is a named seam,
+and Feature 6 should decide what the CLI needs before it is widened.
+
+### Guards that were decoration
+
+`NaN` defeated all four of this PR's guards at once, because every one is a `<`
+comparison and every comparison against NaN is `False`. Worse, `min_separation`
+= NaN makes `threshold_sq` NaN in `resolve_moves`, so every `d2 < NaN` is False
+and **no move is ever blocked** — collision avoidance silently off while
+`test_drones_never_come_closer_than_min_separation` kept passing. All four now
+check `math.isfinite` first.
+
+The start-separation guard also measured the wrong space: it compared metric
+poses, but the invariant lives in cells and `world_to_grid` floors. A pair
+0.43 m apart cleared a 0.4243 m threshold and snapped to 0.25 m — two 0.30 m
+bodies overlapping before tick 1. Now checked in cell space.
+
+Two more silent-parameter cases, both the same shape as the `min_separation < 1
+cell` guard that was already there: an oversized `clearance_radius` blocked
+every cell and reported a completed mission on tick 1 (now rejected against the
+grid extent), and `clearance_radius <= resolution/2` was silently identical to
+0.0 — which undoes D1, since declaring `0.1` greppably states a body and buys
+point-robot planning.
+
+### The mutation lesson
+
+Eleven of twenty-two mutations survived the suite that shipped. The pattern
+across all of them: **every test sat strictly inside the region it was testing,
+never on its boundary.** All three separation guards were `<`, every guard test
+used a value well inside the rejection region and every acceptance test a value
+well outside it, so flipping any of them to `<=` passed. The inflation formula
+was exercised at ratios of 0.0, 0.8 and 1.0 — none near the half-cell step — so
+shifting it by half a cell passed. `_dilate`'s zero-padding was argued for in a
+comment and never tested, because every fixture has walls on all four borders.
+
+Boundaries are where the bugs are, and behavioural tests reach them only by
+accident. The fix was a parametrized test on the arithmetic itself plus an
+exact-boundary acceptance case per guard, importing `MIN_SEPARATION_FLOOR`
+rather than restating it as `0.4243` — the rounded literal is what had hidden
+the boundary.
+
+### One arithmetic correction, inherited from 4b
+
+The worked example `dx = dy = 0.212` was wrong in four files: its Euclidean
+distance is 0.29981, which *fails* a 0.30 m threshold rather than passing it.
+Break-even is `0.30/sqrt(2) = 0.21213`; the illustration now uses 0.2125. The
+`MIN_SEPARATION_FLOOR` derivation was never affected — only the number chosen
+to illustrate it — but it had been copied into `progress.md`, the feature doc
+and a test docstring, which is what a triplicated derivation always does.
 

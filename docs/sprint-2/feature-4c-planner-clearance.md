@@ -20,7 +20,7 @@ The drone has a body; nothing in the system plans for one. Close both halves:
 `_teleport` puts the drone's **centre** on a cell centre (`grid_to_world`
 returns the centre; the body geom has no `pos` offset). The body is a 0.30 m
 box and a cell is 0.10 m, so the drone is 3 cells wide while `is_free(col, row)`
-(`path_planner.py:105`) tests one cell. A cell centre is 0.05 m from the cell
+(`is_free` inside `AStarPlanner.plan`) tests one cell. A cell centre is 0.05 m from the cell
 boundary, so with a wall face on that boundary the body reaches 0.15 m —
 **0.10 m inside the wall**. `set_drone_position` calls `mj_forward`, never
 `mj_step`, so there is no contact resolution to push back.
@@ -44,8 +44,10 @@ Implementation: `r` iterations of 8-neighbour dilation over the occupied mask.
 obvious, deterministic, and not worth vectorising further.
 
 **Only known-occupied cells are inflated, never unknown.** A frontier is by
-definition free-adjacent-to-unknown; inflate unknown and every frontier becomes
-unreachable and exploration halts on tick 1. Threshold `0.6`, matching
+definition free-adjacent-to-unknown; at `r >= 1`, inflating unknown makes every
+frontier unreachable and ends the mission on tick 1 over a single scan's worth
+of map (measured: 384/576 cells known). At `r = 0` there is no inflation and
+the distinction does not arise. Threshold `0.6`, matching
 `mapping/frontier.py`'s `occ_threshold`.
 
 **The start cell is always traversable.** A drone that discovers a wall beside
@@ -71,7 +73,8 @@ At `h = 0.15, res = 0.1`: `k_min = 2`, **`r = 1`** — and that is *grazing*,
 0.15 m against 0.15 m with zero clearance, giving a 3-cell (0.30 m) minimum
 corridor, exactly the drone's width against both walls. With a safety margin
 `m`, `r = ceil((h + m)/res + 0.5) - 1`; a 5 cm margin gives **`r = 2`** and a
-5-cell (0.50 m) minimum corridor. The default is the margin-inclusive value.
+5-cell (0.50 m) minimum corridor. There is no default — D1 makes the argument
+required — so the margin-inclusive value is what callers are expected to pass.
 
 ## Design — separation guards
 
@@ -100,6 +103,7 @@ class AStarPlanner:
     def __init__(
         self,
         free_threshold: float = 0.4,
+        *,                               # keyword-only from here
         clearance_radius: float,         # metres — REQUIRED, see D1
         occupied_threshold: float = 0.6,
     ) -> None: ...

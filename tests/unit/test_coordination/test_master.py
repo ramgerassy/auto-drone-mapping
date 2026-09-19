@@ -16,7 +16,10 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from swarm_mapping.coordination.master import CentralizedMaster
+from swarm_mapping.coordination.master import (
+    MIN_SEPARATION_FLOOR,
+    CentralizedMaster,
+)
 from swarm_mapping.coordination.protocols import Coordinator
 from swarm_mapping.mapping.mapper import Mapper
 from swarm_mapping.mapping.types import MapConfig
@@ -79,11 +82,15 @@ def build_master(
             grid_height=int(6 / resolution),
         )
     )
+    # One planner instance: the master re-checks committed paths against the
+    # same clearance model the strategy plans with.
+    planner = AStarPlanner(clearance_radius=CLEARANCE)
     master = CentralizedMaster(
         engine=engine,
         sensor=sensor,
         mapper=mapper,
-        strategy=NearestFrontier(AStarPlanner(clearance_radius=CLEARANCE)),
+        strategy=NearestFrontier(planner),
+        planner=planner,
         altitude=ALTITUDE,
         min_separation=min_separation,
         max_wait_ticks=MAX_WAIT,
@@ -253,9 +260,11 @@ class TestSeparationGuards:
 
     `resolve_moves` is a radial test but the body is a square, and
     `L_inf <= L_2`, so a radial threshold only clears two axis-aligned boxes at
-    the CIRCUMSCRIBED diameter. At dx = dy = 0.212 the Euclidean distance is
-    0.30 — passing a 0.30 m threshold — while the boxes overlap by ~0.09 m.
-    The floor is therefore 0.30 * sqrt(2) ~= 0.4243, not 0.30.
+    the CIRCUMSCRIBED diameter. At dx = dy = 0.2125 the Euclidean distance is
+    0.3005 - passing a 0.30 m threshold - while the Chebyshev distance is
+    0.2125 and the boxes overlap by 0.0875 m. The floor is therefore
+    0.30 * sqrt(2) ~= 0.4243, not 0.30. See MIN_SEPARATION_FLOOR for the
+    derivation; do not restate it here.
     """
 
     def test_separation_below_the_body_diagonal_is_rejected(self, scene: Path) -> None:
@@ -264,9 +273,14 @@ class TestSeparationGuards:
             build_master(scene, {0: (-1.0, 0.0), 1: (1.0, 0.0)}, min_separation=0.35)
 
     def test_separation_at_the_floor_is_accepted(self, scene: Path) -> None:
-        """Case 10: the guard rejects only what it must."""
+        """Case 10: exactly at the floor is legal — the boxes touch, no overlap.
+
+        Uses MIN_SEPARATION_FLOOR itself rather than a rounded literal, so a
+        `<` silently becoming `<=` fails here. The rounded 0.4243 sat 3.6e-05
+        above the true floor and left that mutation alive.
+        """
         master, _, _ = build_master(
-            scene, {0: (-1.0, 0.0), 1: (1.0, 0.0)}, min_separation=0.4243
+            scene, {0: (-1.0, 0.0), 1: (1.0, 0.0)}, min_separation=MIN_SEPARATION_FLOOR
         )
 
         assert set(master.drone_states) == {0, 1}
@@ -280,13 +294,13 @@ class TestSeparationGuards:
         burn through `max_wait_ticks`, re-select, and stay frozen — a permanent
         deadlock that comes from config alone and looks like a hang.
         """
-        with pytest.raises(ValueError, match="start"):
+        with pytest.raises(ValueError, match="deadlock immediately"):
             build_master(scene, {0: (0.0, 0.0), 1: (0.3, 0.0)})
 
     def test_separation_below_one_cell_is_rejected(self, scene: Path) -> None:
         """Case 12: below a cell the radial check is dead code.
 
-        `resolve_moves` already seeds reservations withevery drone's current cell,
+        `resolve_moves` already seeds reservations with every drone's current cell,
         so a sub-cell radius can never block anything that seeding does not.
         Silently dead safety parameters are worse than absent ones.
         """
@@ -319,6 +333,50 @@ def doorway_xml(gap_south: float, gap_north: float) -> str:
 """
 
 
+class TestGuardBoundaries:
+    """Each guard pinned at the exact value it accepts.
+
+    Every guard is a `<`, and every test sat strictly inside its rejection
+    region — so flipping any of the three to `<=` passed the whole suite.
+    """
+
+    def test_separation_of_exactly_one_cell_is_accepted(self, scene: Path) -> None:
+        """The one-cell guard's boundary: 0.5 m at 0.5 m cells is 1.00 cells."""
+        master, _, _ = build_master(
+            scene, {0: (-1.0, 0.0), 1: (1.0, 0.0)}, min_separation=0.5, resolution=0.5
+        )
+
+        assert set(master.drone_states) == {0, 1}
+
+    def test_start_positions_exactly_at_separation_are_accepted(
+        self, scene: Path
+    ) -> None:
+        """Two cells apart at 0.25 m cells clears a 0.5 m requirement exactly."""
+        master, _, _ = build_master(scene, {0: (0.0, 0.0), 1: (0.5, 0.0)})
+
+        assert set(master.drone_states) == {0, 1}
+
+    def test_non_finite_separation_is_rejected(self, scene: Path) -> None:
+        """NaN passes every `<` comparison, then disables collision avoidance.
+
+        `threshold_sq` becomes NaN in `resolve_moves`, every `d2 < NaN` is
+        False, and no move is ever blocked — while
+        `test_drones_never_come_closer_than_min_separation` keeps passing.
+        """
+        with pytest.raises(ValueError, match="finite"):
+            build_master(
+                scene, {0: (-1.0, 0.0), 1: (1.0, 0.0)}, min_separation=float("nan")
+            )
+
+    def test_empty_swarm_is_rejected(self, scene: Path) -> None:
+        """`all()` over no drones is True, so an empty swarm reported success.
+
+        One tick, nothing mapped, `is_complete` True and no error anywhere.
+        """
+        with pytest.raises(ValueError, match="no drones"):
+            build_master(scene, {})
+
+
 class TestConstrainedPassage:
     """Feature 4c — clearance decides which gaps the body may fly through.
 
@@ -332,8 +390,8 @@ class TestConstrainedPassage:
 
     def run_doorway(
         self, tmp_path: Path, gap_south: float, gap_north: float
-    ) -> tuple[bool, float]:
-        """Fly one drone from the west room; report whether it got through."""
+    ) -> tuple[bool, float, bool]:
+        """Fly one drone from the west room; report crossed, known, blocked."""
         path = tmp_path / f"door_{gap_south}_{gap_north}.xml"
         path.write_text(doorway_xml(gap_south, gap_north))
 
@@ -347,11 +405,13 @@ class TestConstrainedPassage:
                 grid_height=24,
             )
         )
+        planner = AStarPlanner(clearance_radius=CLEARANCE)
         master = CentralizedMaster(
             engine=engine,
             sensor=Rangefinder(engine, num_rays=72, max_range=8.0),
             mapper=mapper,
-            strategy=NearestFrontier(AStarPlanner(clearance_radius=CLEARANCE)),
+            strategy=NearestFrontier(planner),
+            planner=planner,
             altitude=ALTITUDE,
             min_separation=MIN_SEPARATION,
             max_wait_ticks=MAX_WAIT,
@@ -366,7 +426,7 @@ class TestConstrainedPassage:
 
         prob = mapper.grid.probability()
         known = float(np.sum((prob < 0.4) | (prob > 0.6))) / prob.size
-        return crossed, known
+        return crossed, known, master.is_blocked
 
     def test_a_wide_doorway_is_flown_through(self, tmp_path: Path) -> None:
         """Case 13 (liveness): inflation must not wall off reachable space.
@@ -376,10 +436,13 @@ class TestConstrainedPassage:
         has not made the environment unexplorable, which is how "inflate
         unknown cells too" or an oversized radius would fail.
         """
-        crossed, known = self.run_doorway(tmp_path, gap_south=-0.5, gap_north=0.75)
+        crossed, known, blocked = self.run_doorway(
+            tmp_path, gap_south=-0.5, gap_north=0.75
+        )
 
         assert crossed
         assert known > 0.9
+        assert not blocked  # genuinely finished, not walled out
 
     def test_a_doorway_the_body_cannot_fit_is_refused(self, tmp_path: Path) -> None:
         """The width rule, pinned — and the tax Feature 5's MJCF must pay.
@@ -393,9 +456,15 @@ class TestConstrainedPassage:
         Refusing to cross is correct behaviour — before 4c the drone flew
         through with its body inside the jamb.
         """
-        crossed, _ = self.run_doorway(tmp_path, gap_south=-0.25, gap_north=0.5)
+        crossed, known, blocked = self.run_doorway(
+            tmp_path, gap_south=-0.25, gap_north=0.5
+        )
 
         assert not crossed
+        # Without these two, the test passes HARDER as the radius grows: a
+        # clearance so large that nothing moves at all also fails to cross.
+        assert known > 0.5, "the drone should still have mapped its own room"
+        assert blocked, "frontiers remain, so this is a blocked run, not a finished one"
 
 
 class TestDeterminism:

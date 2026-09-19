@@ -313,8 +313,184 @@ class TestObstacleClearance:
         )
 
     def test_inflation_is_deterministic(self) -> None:
-        """Case 8: same grid and radius, same path."""
-        grid = self.blocked_grid()
-        planner = AStarPlanner(clearance_radius=self.ONE_CELL)
+        """Case 8: two separately built planners agree.
 
-        assert planner.plan(grid, (1, 4), (7, 4)) == planner.plan(grid, (1, 4), (7, 4))
+        Calling one instance twice would only re-test a pure function; the
+        risk worth pinning is that inflation depends on nothing carried over
+        between constructions.
+        """
+        grid = self.blocked_grid()
+        first = AStarPlanner(clearance_radius=self.ONE_CELL)
+        second = AStarPlanner(clearance_radius=self.ONE_CELL)
+
+        assert first.plan(grid, (1, 4), (7, 4)) == second.plan(grid, (1, 4), (7, 4))
+
+
+class TestClearanceBoundaries:
+    """The arithmetic and edges the behavioural tests cannot reach.
+
+    Added after a mutation review: `+ 0.5` -> `+ 1.0` in the inflation formula,
+    a wrapping `np.roll` dilation, and a dropped `in_bounds` on the start all
+    survived the behavioural suite.
+    """
+
+    @pytest.mark.parametrize(
+        ("clearance", "expected"),
+        [(0.0, 0), (0.49, 0), (0.5, 0), (0.51, 1), (1.0, 1), (1.5, 1), (1.51, 2)],
+    )
+    def test_inflation_radius_steps_at_half_cell_boundaries(
+        self, clearance: float, expected: int
+    ) -> None:
+        """`(k - 0.5) * res >= clearance`, pinned at its exact step points.
+
+        The behavioural tests only ever exercise ratios of 0.0, 0.8 and 1.0,
+        all of which give r = 0 or 1 — so a formula shifted by half a cell
+        passed every one of them. Reaching the helper directly is the cheap
+        way to pin a pure arithmetic contract.
+        """
+        planner = AStarPlanner(clearance_radius=clearance)
+
+        assert planner._inflation_cells(1.0) == expected
+
+    def test_inflation_does_not_wrap_around_the_grid_edge(self) -> None:
+        """An edge obstacle must not block the opposite edge.
+
+        `_dilate` is zero-padded precisely to avoid this, and says so — but a
+        wrapping `np.roll` implementation passed the whole suite, because every
+        fixture has walls on all four borders. It matters for the outdoor
+        scenario, where obstacles sit well inside a larger grid.
+        """
+        grid = make_grid()
+        fill_free(grid)
+        grid.log_odds[0, 3] = OCC  # top edge
+
+        path = AStarPlanner(clearance_radius=1.0).plan(grid, (0, 7), (7, 7))
+
+        assert path is not None
+        assert all(row == 7 for _, row in path)  # the far edge stays open
+
+    def test_start_outside_the_grid_returns_none(self) -> None:
+        """`in_bounds` on the start is load-bearing, not decorative.
+
+        Without it numpy wraps a negative index and the start is judged against
+        a cell on the opposite edge of the map.
+        """
+        grid = make_grid()
+        fill_free(grid)
+        planner = AStarPlanner(clearance_radius=1.0)
+
+        assert planner.plan(grid, (-1, 4), (6, 6)) is None
+        assert planner.plan(grid, (99, 4), (6, 6)) is None
+
+    @pytest.mark.parametrize("bad", [-0.1, float("nan"), float("inf")])
+    def test_invalid_clearance_is_rejected(self, bad: float) -> None:
+        """NaN is the one that matters: every `<` guard passes it silently."""
+        with pytest.raises(ValueError, match="finite value >= 0"):
+            AStarPlanner(clearance_radius=bad)
+
+    def test_clearance_wider_than_the_grid_is_rejected(self) -> None:
+        """A config typo would otherwise refuse every route without a word.
+
+        Left unchecked, the master reports a completed mission on tick 1 over
+        an unexplored map — the hardest failure to read back from the output.
+        """
+        grid = make_grid()
+        fill_free(grid)
+
+        with pytest.raises(ValueError, match="wider than"):
+            AStarPlanner(clearance_radius=20.0).plan(grid, (1, 1), (6, 6))
+
+    def test_zero_clearance_is_an_exact_no_op(self) -> None:
+        """Even when `free_threshold` exceeds `occupied_threshold`.
+
+        The mask used to be built from `prob > occupied_threshold` before the
+        radius was consulted, so at r = 0 it still acted as a second, stricter
+        free test and rerouted paths a point robot would have taken.
+        """
+        grid = make_grid()
+        fill_free(grid)
+        grid.log_odds[5, 5] = 1.0  # p = 0.731: occupied-ish, but under 0.8
+
+        path = AStarPlanner(free_threshold=0.8, clearance_radius=0.0).plan(
+            grid, (5, 4), (5, 6)
+        )
+
+        assert path == [(5, 4), (5, 5), (5, 6)]
+
+    def test_partially_confident_cell_is_not_inflated(self) -> None:
+        """`occupied_threshold` needs an upper bound too.
+
+        The other tests set log-odds to +-2.0 (p = 0.88 / 0.12), so any
+        threshold in (0.5, 0.88) behaves identically to 0.6 and a mis-set 0.55
+        passed everything. A p = 0.731 cell separates them.
+        """
+        grid = make_grid()
+        fill_free(grid)
+        grid.log_odds[4, 4] = 1.0  # p = 0.731 — above 0.6, so it IS inflated
+
+        planner = AStarPlanner(clearance_radius=1.0)
+        blocked = planner.clearance_mask(grid)
+
+        assert bool(blocked[4, 4])
+        assert bool(blocked[3, 3])  # and its neighbours
+        assert not bool(blocked[1, 1])
+
+
+class TestEscapingTheInflatedZone:
+    """Liveness for a drone that discovers a wall beside itself.
+
+    The single-cell exemption shipped first and only worked at r = 1 — the one
+    radius the tests used. `resolution: 0.1` with a 0.20 m clearance gives
+    r = 2, where every neighbour is inflated too and the drone was stranded.
+    """
+
+    def wall_grid(self, height: int = 10) -> OccupancyGrid:
+        """A 10x10 free grid with a full-width wall along row 1."""
+        grid = make_grid(10, height)
+        fill_free(grid)
+        for col in range(10):
+            grid.log_odds[1, col] = OCC
+        return grid
+
+    @pytest.mark.parametrize(("clearance", "radius"), [(1.0, 1), (2.0, 2), (3.0, 3)])
+    def test_drone_beside_a_wall_can_escape_at_any_radius(
+        self, clearance: float, radius: int
+    ) -> None:
+        """A wall, not a lone obstacle — the geometry the docstring describes."""
+        grid = self.wall_grid()
+        planner = AStarPlanner(clearance_radius=clearance)
+        assert planner._inflation_cells(1.0) == radius  # the case we think it is
+
+        path = planner.plan(grid, (5, 2), (8, 9))
+
+        assert path is not None
+        assert path[0] == (5, 2)
+
+    def test_escaping_is_allowed_but_loitering_is_not(self) -> None:
+        """The zone may be left, never re-entered.
+
+        Otherwise the exemption becomes a licence to route through inflated
+        space for the whole path, which is the bug it was meant to prevent.
+        """
+        grid = self.wall_grid()
+        planner = AStarPlanner(clearance_radius=2.0)
+        blocked = planner.clearance_mask(grid)
+
+        path = planner.plan(grid, (5, 2), (8, 9))
+
+        assert path is not None
+        inside = [i for i, (col, row) in enumerate(path) if blocked[row, col]]
+        assert inside == list(range(len(inside)))  # a prefix, then never again
+
+    def test_start_equals_goal_inside_the_inflated_zone(self) -> None:
+        """A drone already standing on its goal has arrived.
+
+        The goal's clearance test used to run first and undo the start
+        exemption for the very same cell, so a drone on a frontier that had
+        just become wall-adjacent got no assignment at all.
+        """
+        grid = make_grid()
+        fill_free(grid)
+        grid.log_odds[1, 1] = OCC
+
+        assert AStarPlanner(clearance_radius=1.0).plan(grid, (1, 2), (1, 2)) == [(1, 2)]
