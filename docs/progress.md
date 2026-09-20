@@ -1062,3 +1062,71 @@ Next-best-view selection — score candidate *viewpoints* by expected informatio
 gain within sensor range, rather than scoring the frontier cells themselves —
 is the fix, and it is a `FrontierStrategy` change large enough to want its own
 plan rather than a late-sprint improvisation.
+
+---
+
+## 2026-09-20 — The map is 2D, not 2.5D
+
+Raised by the user reading `map.png`: an obstacle in one room was missing, and
+they inferred that if the drone only ever sees walls tall enough to cross its
+flight plane, "this is not 2.5D, it's 2D as long as the room is smaller than
+12 m". That inference is correct, and the measurement is worse than the
+inference.
+
+**The height layer holds exactly one value.**
+
+```
+height layer: 3961 cells written, 58539 still -inf
+  distinct height values: [1.]
+```
+
+1.0 m is the flight altitude. `Rangefinder._compute_directions` builds every ray
+with body-frame `z = 0` — a purely horizontal sweep — so every `hit_point[2]`
+equals the drone's own altitude, and `update_occupied(col, row, hit_z)` stamps
+that same number into every occupied cell it ever writes. The per-cell height
+channel cannot record anything but the plane the rays were cast in.
+
+**And obstacles below the flight plane are invisible.** Measured against
+`large_indoor`'s four crates, with the drone at 1.0 m:
+
+```
+geom          z span        ray at z=1.0 hits it?
+crate_ne   0.00 .. 0.80     False   <- the "missing object"
+crate_sw   0.00 .. 0.80     False
+crate_nw   0.00 .. 1.20     True
+crate_se   0.00 .. 1.00     True
+```
+
+The two crates the user could not find are exactly the two shorter than the
+flight altitude. The two taller ones map correctly, appearing as unknown
+interiors ringed by occupied cells.
+
+**This contradicts a stated non-negotiable.** CLAUDE.md commits to "2.5D
+mapping only. 2D occupancy grid + per-cell height" and names it a constraint
+that shapes every decision. What ships is a 2D occupancy grid plus a constant.
+
+The gap is not in `mapping` — `OccupancyGrid.update_occupied` takes and stores a
+height faithfully, and `save_png` shades by it. It is in `perception`: a single
+horizontal ray plane cannot produce varying `hit_z`. Genuine 2.5D needs rays
+spread over elevation as well as azimuth, so `hit_point[2]` varies with what was
+struck. That is a `Rangefinder` change — the `Sensor` seam's shape already
+allows it, since `scan()` returns `RayObservation`s carrying full 3D hit points
+and the mapper already reads `hit_point[2]`.
+
+Two consequences worth stating plainly:
+
+1. **The height channel has never been exercised.** Every test that asserts on
+   it asserts on `-inf` (absent) or on the flight altitude, so it has been
+   green while measuring nothing. The Feature 4b teammate-filter tests are the
+   clearest case: "the height cell stays `-inf`" was a real regression test for
+   a real bug, but it could never have caught a *wrong* height, only a present
+   one.
+2. **Obstacle detection is altitude-dependent in a way nothing documents.** A
+   scenario author placing a 0.8 m crate has placed a decoration, not an
+   obstacle, and nothing in the config or the scene tells them so.
+
+Also settled in the same exchange: the `map.png` the user was reading came from
+the `--assignment global` run (87.4% coverage), not the 97.6% baseline — the
+under-explored wedges they noticed are the global-allocation failure already
+recorded above, not a mapping fault. The 97.6% map is near-uniformly free with
+both visible crates present.
