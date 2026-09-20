@@ -51,6 +51,7 @@ planning:
   # this gives an inflation radius of 1 cell, so a gap must clear 2r+1 = 3
   # cells plus one cell of discretization slop = 0.8 m. Every doorway in the
   # scene is 1.2 m, so the scene survives this value rising to r = 2.
+  strategy: nearest              # information_gain is WIP — see docs/sprint-3/feature-7-*.md
   clearance_radius: 0.20
   # Eight rooms off a corridor cross is exactly the layout where two drones
   # will otherwise chase the same doorway. The penalty pushes them apart at

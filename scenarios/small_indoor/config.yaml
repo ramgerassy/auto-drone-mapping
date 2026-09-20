@@ -45,6 +45,7 @@ map:
 planning:
   # Body half-extent (0.15) plus a 0.05 m margin. At resolution 0.1 this
   # inflates obstacles by 2 cells.
+  strategy: nearest              # information_gain is WIP — see docs/sprint-3/feature-7-*.md
   clearance_radius: 0.20
   spread_radius: 0.0  # 0.0 disables spatial spreading; the room is small
   spread_penalty: 0   # enough that drones separate on distance alone

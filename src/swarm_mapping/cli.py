@@ -34,7 +34,11 @@ from swarm_mapping.mapping.grid import OccupancyGrid
 from swarm_mapping.mapping.mapper import Mapper
 from swarm_mapping.mapping.types import MapConfig
 from swarm_mapping.perception.rangefinder import Rangefinder
-from swarm_mapping.planning.frontier_strategy import NearestFrontier
+from swarm_mapping.planning.frontier_strategy import (
+    FrontierStrategy,
+    InformationGainFrontier,
+    NearestFrontier,
+)
 from swarm_mapping.planning.path_planner import AStarPlanner
 from swarm_mapping.simulation.engine import SimulationEngine
 from swarm_mapping.visualization.renderer import LiveViewer
@@ -248,11 +252,22 @@ def build_mission(config: ScenarioConfig, drones: int | None = None) -> Mission:
     # mismatch, because a silent disagreement about which cells the body may
     # occupy is exactly the bug that guard exists to catch.
     planner = AStarPlanner(clearance_radius=config.planning.clearance_radius)
-    strategy = NearestFrontier(
-        planner,
-        spread_radius=config.planning.spread_radius,
-        spread_penalty=config.planning.spread_penalty,
-    )
+    strategy: FrontierStrategy
+    if config.planning.strategy == "information_gain":
+        # sensor_range comes from the sensor's own config rather than a second
+        # key, so the truncation cannot disagree with the sensor it models.
+        strategy = InformationGainFrontier(
+            planner,
+            sensor_range=config.sensor.max_range,
+            spread_radius=config.planning.spread_radius,
+            spread_penalty=config.planning.spread_penalty,
+        )
+    else:
+        strategy = NearestFrontier(
+            planner,
+            spread_radius=config.planning.spread_radius,
+            spread_penalty=config.planning.spread_penalty,
+        )
 
     master = CentralizedMaster(
         engine=engine,

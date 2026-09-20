@@ -200,6 +200,11 @@ class PlanningSettings:
     """Path planning and frontier selection parameters.
 
     Attributes:
+        strategy: Which `FrontierStrategy` to use — "nearest" (cheapest
+            reachable frontier by true path cost) or "information_gain" (best
+            unknown-space-seen per unit of travel, targeting a viewpoint rather
+            than the frontier cell). Both are kept so the two can be compared
+            on the same scenario; see docs/sprint-3/feature-7-*.md.
         clearance_radius: Drone half-extent plus safety margin, in metres.
             Obstacles are inflated by this before planning.
         spread_radius: Radius in metres within which a candidate frontier is
@@ -212,6 +217,7 @@ class PlanningSettings:
             drone can clear. See `Mapper`.
     """
 
+    strategy: str
     clearance_radius: float
     spread_radius: float
     spread_penalty: int
@@ -397,6 +403,7 @@ def parse_config(raw: Any) -> ScenarioConfig:
         ),
         map=map_settings,
         planning=PlanningSettings(
+            strategy=_strategy(planning_section),
             clearance_radius=_non_negative(
                 planning_section, "planning", "clearance_radius"
             ),
@@ -424,3 +431,28 @@ def parse_config(raw: Any) -> ScenarioConfig:
             ),
         ),
     )
+
+
+_STRATEGIES = ("nearest", "information_gain")
+
+
+def _strategy(section: dict[str, Any]) -> str:
+    """Read and validate `planning.strategy`.
+
+    Args:
+        section: The `planning` config section.
+
+    Returns:
+        The strategy name.
+
+    Raises:
+        ValueError: If the key is missing or names an unknown strategy. Listed
+            explicitly rather than falling back to a default, because silently
+            running the wrong exploration strategy is invisible in the output —
+            the map looks plausible either way, just worse.
+    """
+    value = section.get("strategy")
+    if value not in _STRATEGIES:
+        msg = f"planning.strategy must be one of {_STRATEGIES}, got {value!r}"
+        raise ValueError(msg)
+    return str(value)

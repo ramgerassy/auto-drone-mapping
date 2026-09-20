@@ -51,6 +51,7 @@ def valid_config() -> dict[str, Any]:
             "max_height": 3.0,
         },
         "planning": {
+            "strategy": "nearest",
             "clearance_radius": 0.20,
             "spread_radius": 0.0,
             "spread_penalty": 0,
