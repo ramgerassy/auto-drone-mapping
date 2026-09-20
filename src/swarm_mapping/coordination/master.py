@@ -89,6 +89,7 @@ class CentralizedMaster:
         min_separation: float,
         max_wait_ticks: int,
         no_progress_ticks: int = 0,
+        return_to_base_ticks: int = 0,
     ) -> None:
         self._engine = engine
         self._sensor = sensor
@@ -117,6 +118,12 @@ class CentralizedMaster:
         self._no_progress_ticks = no_progress_ticks
         self._stalled_for = 0
         self._last_known = -1
+        # Frontiers a drone flew all the way to and still could not
+        # resolve. See `_assign`.
+        self._exhausted: set[Cell] = set()
+        self._return_ticks = return_to_base_ticks
+        self._idle_ticks: dict[int, int] = {}
+        self._going_home: dict[int, list[Cell]] = {}
 
         grid = mapper.grid
         # Every guard below is a `<` comparison and every comparison against
@@ -191,6 +198,13 @@ class CentralizedMaster:
                     "deadlock immediately."
                 )
                 raise ValueError(msg)
+
+        # Where each drone started, and therefore where it returns to. Start
+        # positions are validated clear of geometry at construction, so home is
+        # always somewhere it can legally sit.
+        self._home: dict[int, Cell] = {
+            drone_id: state.cell for drone_id, state in self._states.items()
+        }
 
         self._complete = False
         self._blocked = False
@@ -288,6 +302,33 @@ class CentralizedMaster:
     def _assign(self) -> None:
         """Give every drone that needs one a frontier to fly to."""
         frontiers = self._mapper.get_frontiers()
+
+        # A frontier a drone reached without clearing cannot be cleared by
+        # going there again. Wall-surface cells drift across the classification
+        # bands and emit frontiers over space no scan can resolve, so without
+        # this a drone shuttles between two such phantoms indefinitely —
+        # visible in the viewer as a drone looping between the same two rooms.
+        #
+        # "Reached" is the right test rather than "targeted": arriving is what
+        # proves the frontier is unresolvable from close range, which is the
+        # only evidence available without ground truth.
+        live = {region.cell for region in frontiers}
+        for state in self._states.values():
+            if (
+                state.assignment is not None
+                and next_cell(state) is None  # path exhausted: it arrived
+                and state.assignment.region.cell in live
+            ):
+                self._exhausted.add(state.assignment.region.cell)
+                _LOGGER.info(
+                    "frontier_exhausted",
+                    extra={
+                        "drone_id": state.drone_id,
+                        "cell": state.assignment.region.cell,
+                    },
+                )
+        frontiers = [f for f in frontiers if f.cell not in self._exhausted]
+
         self._states = assign_all(
             self._mapper.grid,
             frontiers,
@@ -303,6 +344,7 @@ class CentralizedMaster:
         self._complete = all(
             state.assignment is None for state in self._states.values()
         )
+        self._update_idle_drones()
         self._unreachable_frontiers = len(frontiers) if self._complete else 0
         self._blocked = self._complete and bool(frontiers)
         if self._blocked:
@@ -314,6 +356,38 @@ class CentralizedMaster:
                 },
             )
 
+    def _update_idle_drones(self) -> None:
+        """Send a drone home once it has sat unassigned for long enough.
+
+        Only drones with nothing to do are moved, so this never competes with
+        exploration: a drone that picks up a frontier on any tick abandons the
+        trip home immediately.
+        """
+        for drone_id, state in self._states.items():
+            if state.assignment is not None:
+                self._idle_ticks[drone_id] = 0
+                self._going_home.pop(drone_id, None)
+                continue
+
+            idle = self._idle_ticks.get(drone_id, 0) + 1
+            self._idle_ticks[drone_id] = idle
+            home = self._home[drone_id]
+            if (
+                self._return_ticks <= 0
+                or idle < self._return_ticks
+                or drone_id in self._going_home
+                or state.cell == home
+            ):
+                continue
+
+            path = self._planner.plan(self._mapper.grid, state.cell, home)
+            if path is not None:
+                self._going_home[drone_id] = path[1:]
+                _LOGGER.info(
+                    "returning_to_base",
+                    extra={"drone_id": drone_id, "idle_ticks": idle},
+                )
+
     def _move(self) -> None:
         """Step each drone one cell, yielding where two would collide."""
         current: dict[int, Cell] = {
@@ -322,6 +396,11 @@ class CentralizedMaster:
         desired: dict[int, Cell | None] = {
             drone_id: next_cell(state) for drone_id, state in self._states.items()
         }
+        # An idle drone on its way home has no assignment, so `next_cell` gives
+        # it nothing; its route lives here instead.
+        for drone_id, route in self._going_home.items():
+            if route:
+                desired[drone_id] = route[0]
         final = resolve_moves(current, desired, self._min_separation_cells)
 
         for drone_id in self._ordered_ids:
@@ -335,6 +414,11 @@ class CentralizedMaster:
                     waited_ticks=0,
                 )
                 self._teleport(drone_id, cell)
+                homeward = self._going_home.get(drone_id)
+                if homeward and homeward[0] == cell:
+                    homeward.pop(0)
+                    if not homeward:
+                        self._going_home.pop(drone_id, None)
             elif desired[drone_id] is not None:
                 # Wanted to move but was blocked — count it toward the escape.
                 self._states[drone_id] = replace(

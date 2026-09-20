@@ -58,3 +58,4 @@ coordination:
   max_wait_ticks: 5   # blocked ticks before a drone abandons its frontier
   max_ticks: 2000     # safety cap — a blocked mission must terminate
   no_progress_ticks: 200   # stop once 200 ticks resolve no new cell
+  return_to_base_ticks: 150  # idle this long -> fly home and park

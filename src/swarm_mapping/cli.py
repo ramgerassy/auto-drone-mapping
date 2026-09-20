@@ -255,6 +255,7 @@ def build_mission(config: ScenarioConfig, drones: int | None = None) -> Mission:
         min_separation=config.coordination.min_separation,
         max_wait_ticks=config.coordination.max_wait_ticks,
         no_progress_ticks=config.coordination.no_progress_ticks,
+        return_to_base_ticks=config.coordination.return_to_base_ticks,
     )
 
     return Mission(engine=engine, mapper=mapper, master=master, config=config)

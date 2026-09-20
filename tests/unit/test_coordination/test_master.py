@@ -66,6 +66,7 @@ def build_master(
     starts: dict[int, tuple[float, float]],
     min_separation: float = MIN_SEPARATION,
     resolution: float = RESOLUTION,
+    return_to_base_ticks: int = 0,
 ) -> tuple[CentralizedMaster, SimulationEngine, Mapper]:
     """Wire an engine, sensor, mapper and master over the tiny room."""
     positions = {
@@ -95,6 +96,7 @@ def build_master(
         altitude=ALTITUDE,
         min_separation=min_separation,
         max_wait_ticks=MAX_WAIT,
+        return_to_base_ticks=return_to_base_ticks,
     )
     return master, engine, mapper
 
@@ -560,3 +562,49 @@ class TestPlannerConsistency:
                 min_separation=MIN_SEPARATION,
                 max_wait_ticks=MAX_WAIT,
             )
+
+
+class TestIdleDronesGoHome:
+    """An unassigned drone parks, then returns to base."""
+
+    def test_idle_drone_flies_back_to_its_start(self, scene: Path) -> None:
+        """A drone with nothing to do should not loiter wherever it stopped.
+
+        An idle drone parked mid-room is an obstacle its teammates route
+        around and a body the separation rule must respect, so it goes back to
+        the start position — which construction already validated as clear of
+        geometry.
+        """
+        start = (-1.5, 0.0)
+        master, _, mapper = build_master(scene, {0: start}, return_to_base_ticks=3)
+        home = master.drone_states[0].cell
+
+        # Explore until there is nothing left to assign.
+        run_mission(master)
+        assert master.drone_states[0].assignment is None
+        assert master.drone_states[0].cell != home  # it wandered off
+
+        # Idle long enough to trigger the return, then let it fly.
+        for _ in range(120):
+            master.tick()
+            if master.drone_states[0].cell == home:
+                break
+
+        assert master.drone_states[0].cell == home
+
+    def test_a_drone_with_work_never_goes_home(self, scene: Path) -> None:
+        """Returning must never compete with exploring.
+
+        With the threshold at 1 tick, any drone that is merely between
+        assignments would be sent home constantly; only genuinely idle ones
+        should be.
+        """
+        master, _, _ = build_master(scene, {0: (-1.5, 0.0)}, return_to_base_ticks=1)
+        home = master.drone_states[0].cell
+
+        for _ in range(12):
+            master.tick()
+
+        # It has real frontiers to chase this early, so it is moving away.
+        assert master.drone_states[0].assignment is not None
+        assert master.drone_states[0].cell != home

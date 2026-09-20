@@ -228,6 +228,12 @@ class CoordinationSettings:
         max_wait_ticks: Consecutive blocked ticks after which a drone abandons
             its frontier, breaking head-on deadlocks.
         max_ticks: Safety cap on mission length. A blocked mission must end.
+        return_to_base_ticks: Consecutive ticks a drone may sit unassigned
+            before it flies back to its start position. Expressed in ticks
+            because ticks are the only clock a deterministic run has — no
+            `mj_step` is called, so simulated seconds never advance, and
+            wall-clock time would make the mission non-reproducible. 0 keeps
+            idle drones parked where they stopped.
         no_progress_ticks: Consecutive ticks without a newly classified cell
             after which the mission stops. Wall-surface cells drift across the
             classification bands and keep emitting small frontier regions, a
@@ -241,6 +247,7 @@ class CoordinationSettings:
     max_wait_ticks: int
     max_ticks: int
     no_progress_ticks: int
+    return_to_base_ticks: int
 
 
 @dataclass(frozen=True)
@@ -411,6 +418,9 @@ def parse_config(raw: Any) -> ScenarioConfig:
             max_ticks=_positive_int(coordination_section, "coordination", "max_ticks"),
             no_progress_ticks=_non_negative_int(
                 coordination_section, "coordination", "no_progress_ticks"
+            ),
+            return_to_base_ticks=_non_negative_int(
+                coordination_section, "coordination", "return_to_base_ticks"
             ),
         ),
     )

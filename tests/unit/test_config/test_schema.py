@@ -61,6 +61,7 @@ def valid_config() -> dict[str, Any]:
             "max_wait_ticks": 5,
             "max_ticks": 2000,
             "no_progress_ticks": 200,
+            "return_to_base_ticks": 150,
         },
     }
 

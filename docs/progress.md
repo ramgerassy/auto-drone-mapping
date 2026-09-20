@@ -950,3 +950,46 @@ permanently visible but unoccupiable, so a fully explored room still ends with
 frontiers outstanding. What separates finished from walled-out is magnitude,
 which the handoff already recorded and these assertions had ignored.
 
+### Addendum — exhausted frontiers and return-to-base
+
+Two more things the viewer showed that no test asked about.
+
+**A drone looped between the same two rooms.** Wall-surface cells emit
+frontiers over space no scan can resolve, so a drone flies to one, fails to
+clear it, picks the other, fails, and comes back. The coordinator now remembers
+frontiers a drone **reached** without clearing and stops offering them.
+"Reached" is the right evidence rather than "targeted": arriving is what proves
+a frontier cannot be resolved from close range, and it is the only proof
+available without ground-truth geometry.
+
+**An idle drone loitered wherever it stopped.** It is then an obstacle its
+teammates route around and a body the separation rule must keep clear of.
+After `return_to_base_ticks` unassigned ticks a drone now flies back to its
+start position, which construction already validated as clear of geometry. Any
+drone that picks up a frontier abandons the trip home immediately, so returning
+never competes with exploring.
+
+Expressed in **ticks, not seconds**, despite the request being "60 seconds":
+`mj_step` is never called, so simulated time does not advance, and wall-clock
+time would make a deterministic run irreproducible. Ticks are the only clock
+this system has.
+
+### Combined effect
+
+```
+                        before        after
+large_indoor 3 drones   2264 ticks    1498 ticks   97.6% coverage
+small_indoor 3 drones    245 ticks     175 ticks   98.4%
+scaling KPI             1.54x         4.70x        (221 vs 47 ticks to 95%)
+```
+
+The scaling KPI went from a hair over its 1.5x commitment to comfortably past
+it. That is not a measurement change — it is the wall-hugging fix. A third of
+each mission had been spent flying inside walls, and that waste fell hardest on
+the multi-drone arm, where three drones were each doing it.
+
+Worth recording as a process note: the wall-hugging, the room-looping and the
+loitering were all found by **watching the simulation**, with 300 tests green.
+Determinism, coverage, separation and accuracy were all passing throughout.
+None of them ask where the drone actually *is*.
+
