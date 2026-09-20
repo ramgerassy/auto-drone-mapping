@@ -1,0 +1,92 @@
+# Comb indoor scenario — 40m x 40m, a 3.2 m spine with nine dead-end ribs.
+#
+# An ADVERSARIAL benchmark for comparing frontier strategies. small_indoor
+# (one open room) and large_indoor (a corridor cross with eight rooms) do not
+# discriminate: both were explored acceptably by a strategy measured to divide
+# labour badly (one drone covered half the map while another never left the
+# junction) and to thrash between targets (34% of one drone's cells retrod).
+# A dead-end rib has no through-route, so both faults cost double here.
+#
+# Same three-drone swarm and same sensor as large_indoor, so a run against this
+# scene differs from that one only in the geometry.
+
+scene:
+  # Path relative to src/swarm_mapping/simulation/assets/
+  path: comb_indoor.xml
+
+drones:
+  # On the spine, spread along it. The spine is the only region connecting the
+  # ribs, and its interior is y in [-1.6, 1.6] — these sit on its centreline,
+  # clear of every geom. Spread in x rather than y so no two drones start in
+  # the same rib's catchment. Drone ids are this list's indices.
+  start_positions:
+    - [0.0, 0.0, 1.0]
+    - [-13.0, 0.0, 1.0]
+    - [13.0, 0.0, 1.0]
+  altitude: 1.0
+
+sensor:
+  # Same Slamtec RPLIDAR A2M8 model as the other scenarios: 360-degree 2D
+  # scanning LiDAR, 16 m rated. num_rays is that one sensor's angular samples
+  # per scan. Held identical to large_indoor so a comparison across the two
+  # scenes varies the geometry and nothing else.
+  num_rays: 72        # 5-degree spacing
+  max_range: 12.0     # metres — operational cap ~25% below the 16 m rating
+  exclusion_radius: 0.30  # metres — teammate filter; sized to the body's
+                      # corner radius. A 1.2 m rib has no second lane, so two
+                      # drones meeting in one would otherwise map each other
+                      # as a wall across it.
+
+map:
+  # resolution 0.2, as large_indoor — see docs/sprint-2/feature-5-*.md. At 0.1
+  # this scene is 400x400 = 160k cells, where the clearance mask alone costs
+  # milliseconds per plan() call, and plan() runs once per candidate frontier
+  # per re-selecting drone.
+  #
+  # 200x200 = 40k cells is deliberately below large_indoor's 62.5k: this scene
+  # exists to be run repeatedly, once per strategy under comparison, so its
+  # per-run cost is part of its design.
+  #
+  # Every wall face in the MJCF lies on a 0.2 m lattice point, which is also a
+  # 0.1 m lattice point — so dropping to 0.1 needs no change to the geometry.
+  resolution: 0.2     # metres per cell
+  origin_x: -20.0     # grid covers -20 to +20 in x
+  origin_y: -20.0
+  grid_width: 200     # 40m / 0.2m
+  grid_height: 200
+  max_height: 3.0     # wall height, for PNG shading
+
+planning:
+  # The drone's body half-extent (0.15) plus a 0.05 m margin. At resolution 0.2
+  # this gives an inflation radius of 1 cell, so a gap must clear 2r+1 = 3
+  # cells plus one cell of discretization slop = 0.8 m. Every rib mouth is
+  # 1.2 m, so the scene survives this value rising to r = 2.
+  clearance_radius: 0.20
+  # The baseline this scene is meant to expose: a comparison run overrides it,
+  # and the committed value is the one whose faults the geometry was designed
+  # around, so a fresh run reproduces the behaviour under study.
+  strategy: nearest
+  # Rib mouths sit 4 m apart along the spine. A radius near that pitch is what
+  # stops two drones claiming frontiers in the same rib — the single most
+  # wasteful thing that can happen in this scene, since a dead-end 1.2 m
+  # corridor has nothing to divide between them.
+  spread_radius: 6.0
+  spread_penalty: 40
+  min_frontier_size: 2    # 2 = no filtering; raising it trades coverage for speed
+
+coordination:
+  # Centre-to-centre, metres. Floored at the body diagonal
+  # (2 * 0.15 * sqrt(2) = 0.4243) by CentralizedMaster. At resolution 0.2 this
+  # is 2.5 cells, comfortably above the one-cell minimum.
+  min_separation: 0.5
+  max_wait_ticks: 5   # blocked ticks before a drone abandons its frontier
+  max_ticks: 4000     # safety cap — fewer cells than large_indoor, but a rib
+                      # is a there-and-back trip, so path length per cell is
+                      # higher. A blocked mission must still end.
+  assignment: greedy          # or 'global'. The baseline whose measured fault
+                              # — one drone covering half the map — this scene
+                              # is shaped to expose; a comparison run flips it.
+  target_tolerance_cells: 0   # 0 = exact match (baseline). Raising it is the
+                              # other half of the anti-thrash experiment.
+  no_progress_ticks: 200   # stop once 200 ticks resolve no new cell
+  return_to_base_ticks: 150  # idle this long -> fly home and park

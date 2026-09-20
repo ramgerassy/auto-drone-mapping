@@ -27,6 +27,32 @@ MAX_DRONES = 5
 POSITION_LENGTH = 3
 
 
+_ASSIGNMENT_MODES = ("greedy", "global")
+
+
+def _assignment_mode(section: dict[str, Any]) -> str:
+    """Read and validate `coordination.assignment`.
+
+    Args:
+        section: The `coordination` config section.
+
+    Returns:
+        The assignment mode.
+
+    Raises:
+        ValueError: If the key is missing or names an unknown mode. No default:
+            which allocation is in force is invisible in the output and is
+            exactly what a benchmark is comparing, so it has to be stated.
+    """
+    value = section.get("assignment")
+    if value not in _ASSIGNMENT_MODES:
+        msg = (
+            f"coordination.assignment must be one of {_ASSIGNMENT_MODES}, got {value!r}"
+        )
+        raise ValueError(msg)
+    return str(value)
+
+
 def _section(config: dict[str, Any], name: str) -> dict[str, Any]:
     """Return a required top-level section, or raise naming it."""
     if name not in config:
@@ -234,6 +260,23 @@ class CoordinationSettings:
             `mj_step` is called, so simulated seconds never advance, and
             wall-clock time would make the mission non-reproducible. 0 keeps
             idle drones parked where they stopped.
+        target_tolerance_cells: How far a live frontier may be from the cell a
+            drone is flying to before the target counts as gone. 0 demands an
+            exact match.
+
+            Motivation is measured. A frontier's representative cell drifts as
+            its region changes shape, and wall-surface cells cross the
+            classification bands from tick to tick, so an exact-match test drops
+            targets that have not really vanished: 150 target changes per drone
+            over 1498 ticks, 92% of them straight swaps from one goal to
+            another, averaging ten ticks of commitment. Every swap wastes the
+            travel already spent.
+        assignment: How frontiers are handed out — "greedy" (each drone in
+            descending id order takes the best that is left, so the highest id
+            gets first pick and drone 0 takes leftovers) or "global" (one
+            allocation chosen to minimise total travel across the whole swarm).
+            Motivation is measured: under greedy, one drone covered half the
+            map while another never left the corridor junction.
         no_progress_ticks: Consecutive ticks without a newly classified cell
             after which the mission stops. Wall-surface cells drift across the
             classification bands and keep emitting small frontier regions, a
@@ -246,6 +289,8 @@ class CoordinationSettings:
     min_separation: float
     max_wait_ticks: int
     max_ticks: int
+    target_tolerance_cells: int
+    assignment: str
     no_progress_ticks: int
     return_to_base_ticks: int
 
@@ -416,6 +461,10 @@ def parse_config(raw: Any) -> ScenarioConfig:
                 coordination_section, "coordination", "max_wait_ticks"
             ),
             max_ticks=_positive_int(coordination_section, "coordination", "max_ticks"),
+            target_tolerance_cells=_non_negative_int(
+                coordination_section, "coordination", "target_tolerance_cells"
+            ),
+            assignment=_assignment_mode(coordination_section),
             no_progress_ticks=_non_negative_int(
                 coordination_section, "coordination", "no_progress_ticks"
             ),

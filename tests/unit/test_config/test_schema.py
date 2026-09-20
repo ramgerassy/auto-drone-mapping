@@ -60,6 +60,8 @@ def valid_config() -> dict[str, Any]:
             "min_separation": 0.5,
             "max_wait_ticks": 5,
             "max_ticks": 2000,
+            "assignment": "greedy",
+            "target_tolerance_cells": 0,
             "no_progress_ticks": 200,
             "return_to_base_ticks": 150,
         },
