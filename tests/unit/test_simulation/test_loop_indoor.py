@@ -48,7 +48,17 @@ CLEARANCE = 0.20
 WALL_TOP = 3.0  # walls reach the full height; obstacles are everything shorter
 
 # The three ring-corridor spawns, from the scenario config.
-SPAWNS = ((0.0, 14.4), (14.4, 0.0), (-14.4, 0.0))
+# All five, so the reachability and clearance checks below cover every spawn
+# the config can actually use. The last two were added to take the scaling KPI
+# to five drones; they sit on the south leg and the north-east corner, keeping
+# the set spread around the racetrack rather than clustered.
+SPAWNS = (
+    (0.0, 14.4),
+    (14.4, 0.0),
+    (-14.4, 0.0),
+    (0.0, -14.4),
+    (14.4, 14.4),
+)
 
 # One probe per room, well inside it and clear of every obstacle.
 ROOMS = {
