@@ -895,3 +895,58 @@ range, not exploration. Replaced with per-room mapped fraction (the actual
 requirement, and per-room so one dark room cannot hide behind a 97% global
 figure) plus a weaker traversal check that some doorways are genuinely flown.
 
+### Addendum — drones were flying inside the walls
+
+Found by watching `--view`, not by a test: drones passed very close to walls,
+got stuck, and *vanished* from an overhead view. A drone cannot disappear from
+above unless it is inside a 3 m wall, occluded by it.
+
+Measured on large_indoor before the fix:
+
+```
+drone 0: inside the inflated zone 1252/2264 ticks (55.3%), longest streak 1183
+drone 1:                           359/2264 ticks (15.9%), longest streak  249
+drone 2:                           151/2264 ticks ( 6.7%), longest streak   61
+```
+
+At `resolution` 0.2 a cell at Chebyshev distance 1 from an obstacle puts the
+wall face 0.1 m from the drone centre against a 0.15 m half-extent, so this is
+genuine overlap with wall geometry, for over half the mission.
+
+**Cause: the 4c escape phase was unbounded.** The rule was "from a blocked cell
+you may move to any free cell; from an open cell only to open cells", described
+as *escaping is allowed, loitering is not*. But a path that **starts** in the
+zone and **never leaves** satisfies it completely — the planner was free to
+route along the inside of a wall for the entire journey.
+
+**The test could not catch it.** It asserted that blocked cells form a *prefix*
+of the path, which a path that never leaves the zone satisfies trivially. A
+prefix property says nothing about length.
+
+**Fix: bound the allowance to the start's neighbourhood** — a blocked cell is
+passable only within Chebyshev `r` of the start. Escaping means stepping off
+the spot you are standing on, not licence to travel by wall. The test now
+asserts the bound itself, at r = 1, 2 and 3.
+
+```
+drone 0: 1252 -> 0 ticks in the zone
+drone 1:  359 -> 2   (genuine escapes from a newly discovered wall)
+drone 2:  151 -> 0
+mission: 2264 -> 1498 ticks, coverage unchanged at 97.6%
+```
+
+Exploration got **faster**, because a third of the mission had been spent
+flying through walls rather than mapping.
+
+Two lessons worth keeping. First, **a prefix assertion is not a bound** — it
+constrains shape, not magnitude, and magnitude was the whole property. Second,
+this was invisible to 300 tests and obvious within a minute of watching the
+thing run. Determinism, coverage and separation were all green throughout;
+none of them ask where the drone *is*.
+
+Also corrected here: two assertions treating `is_blocked` as pass/fail. It
+fires on successful runs too — clearance leaves wall-adjacent frontiers
+permanently visible but unoccupiable, so a fully explored room still ends with
+frontiers outstanding. What separates finished from walled-out is magnitude,
+which the handoff already recorded and these assertions had ignored.
+

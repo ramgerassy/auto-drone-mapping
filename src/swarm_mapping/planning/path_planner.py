@@ -298,6 +298,8 @@ class AStarPlanner:
         self._check_radius_fits(grid)
         prob = grid.probability()
         blocked = self._blocked_by_clearance(grid, prob)
+        # How far the escape allowance reaches from the start cell.
+        radius = self._inflation_cells(grid.config.resolution)
 
         def is_open(col: int, row: int) -> bool:
             """Free and in bounds, ignoring clearance."""
@@ -356,12 +358,17 @@ class AStarPlanner:
             ):
                 # Exempting only the start cell is not enough: at r >= 2 every
                 # neighbour of an embedded drone is inflated too, so it would
-                # be stranded with no legal first step — and r = 2 is what
-                # `resolution: 0.1` produces for a 0.20 m clearance. While the
-                # search is still inside the zone it may move through it; once
-                # it reaches open ground it may not re-enter. Escaping is
-                # allowed, loitering is not.
-                escaping = bool(blocked[row, col])
+                # be stranded with no legal first step. But the allowance has
+                # to be BOUNDED to the start's neighbourhood, or a path that
+                # begins in the zone may stay in it indefinitely — measured on
+                # large_indoor before this bound, one drone flew 1183
+                # consecutive ticks inside the inflated zone, which at
+                # resolution 0.2 means its body overlapping wall geometry for
+                # over half the mission. Escaping is stepping off the spot you
+                # are standing on, not licence to travel by wall.
+                escaping = bool(blocked[row, col]) and (
+                    max(abs(col - start[0]), abs(row - start[1])) < radius
+                )
                 passable = is_open if escaping else is_free
 
                 for d_col, d_row in moves:
