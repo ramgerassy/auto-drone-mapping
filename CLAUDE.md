@@ -218,6 +218,8 @@ If I suggest any of these, push back:
 
 Update this section each sprint so Claude Code knows what's in-flight.
 
-**Sprint 1 — Skeleton (in progress).** Goal: 1 drone follows a hardcoded patrol path in the small indoor scenario, producing a `.npz` + `.png` map. Pipeline works end-to-end. Out of scope: `planning` (use hardcoded path), `visualization` (PNG export only), wind, failures, multi-drone.
+**Sprint 2 — Multi-drone exploration (in progress).** Goal: multiple drones with a real planner explore a real environment using frontier-based exploration. Adds `planning` module (frontier detection, `NearestFrontier` strategy, A\*), extends `coordination` (frontier assignment, claimed-frontiers list, spatial spreading penalty), extends `mapping` with a `get_frontiers()` API. Adds the large indoor environment. Out of scope: wind, failure handling, outdoor, live dashboard.
 
-Current focus: `simulation` module — MJCF drone model, `Localizer` and `RayCaster` interfaces, basic step loop.
+Current focus: `planning` module — frontier detection algorithm, `FrontierStrategy` interface with `NearestFrontier` implementation, and A\* path planner.
+
+**Sprint 1 (complete).** One drone follows hardcoded patrol path in small indoor scenario, produces `.npz` + `.png` map. Full data pipeline works end-to-end. Modules built: `config`, `simulation` (with `Localizer` + `RayCaster`), `perception` (rangefinder + world-frame observations), `mapping` (occupancy grid + Bayesian update), `coordination` (tick loop with hardcoded path).

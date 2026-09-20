@@ -1,0 +1,98 @@
+# Sprint 2 Plan — Multi-drone frontier exploration
+
+Master plan for Sprint 2. Per-feature detailed plans live in
+[`docs/sprint-2/`](sprint-2/) and are written (and reviewed) as each feature
+starts. This file is the index and the source of truth for scope, decisions,
+and progress.
+
+## Goal
+
+Multiple drones (1–5) with a real planner explore an unknown environment using
+frontier-based exploration, producing the same `.npz` + `.png` 2.5D map as
+Sprint 1 — but discovered autonomously rather than via a hardcoded patrol.
+
+## Scope
+
+**In:** `planning` module (frontier selection + A\* path planning),
+`mapping.get_frontiers()`, multi-drone `coordination`, the large-indoor
+scenario.
+
+**Out (explicit):** wind, failure handling, outdoor scenario, live dashboard,
+physics-based flight (movement stays teleport — see Decision 2).
+
+## New interfaces (SOLID seams — stability points)
+
+Two of the four named seams are created this sprint. Once defined, consumers
+depend on the Protocol, not the implementation.
+
+| Interface | Kind | First implementation |
+| --- | --- | --- |
+| `FrontierStrategy` | Protocol (seam) | `NearestFrontier` |
+| `Coordinator` | Protocol (seam) | `CentralizedMaster` |
+| `PathPlanner` | Protocol (non-seam) | `AStarPlanner` |
+
+Dependency direction stays one-way: `coordination → planning → mapping (read-only)`.
+
+## Feature breakdown
+
+Each feature is a branch off `sprint-2`, merged back when green. The whole
+sprint opens **one** PR `sprint-2 → main` at the end.
+
+| # | Branch | Deliverable | Depends on | Status |
+| --- | --- | --- | --- | --- |
+| 1 | `feat/frontier-detection` | `mapping.get_frontiers()` — detect free-adjacent-to-unknown cells, cluster into regions, return world-coord centroids + size | mapping | ✅ merged (PR #7) |
+| 2 | `feat/path-planner` | `planning`: `PathPlanner` protocol + `AStarPlanner` on the occupancy grid | mapping | ✅ merged (PR #8) |
+| 3 | `feat/frontier-strategy` | `planning`: `FrontierStrategy` protocol + `NearestFrontier` (+ spatial spreading penalty) | mapping (1), 2 | ✅ merged (PR #9) — [plan](sprint-2/feature-3-frontier-strategy.md) |
+| 4 | `feat/coordination-master` | `coordination`: `Coordinator` protocol + `CentralizedMaster` — multi-drone tick loop, frontier assignment, claimed list, step-along-path, **wait-on-conflict collision avoidance** | 2, 3, simulation | ✅ merged (PR #10) — [plan](sprint-2/feature-4-coordination-master.md) |
+| 4b | `feat/perception-teammate-filter` | `perception`: filter teammate returns out of a scan so drones are never mapped as obstacles (emit a MISS with shortened range) | simulation, perception | ✅ merged (PR #11) — [plan](sprint-2/feature-4b-perception-teammate-filter.md) |
+| 4c | `feat/planner-clearance` | **Drone body vs config, both halves.** `planning`: obstacle inflation so the 0.30 m body is not planned as a point (clearance radius in `AStarPlanner`, always-traversable start cell, known-occupied cells only). `simulation`: half-extent as a module constant. `coordination`: `min_separation` floor at the body diagonal (0.424 m), start-position spacing validation, `min_separation_cells >= 1` assertion | 2, 4 | ✅ merged (PR #12) — [plan](sprint-2/feature-4c-planner-clearance.md) |
+| 5 | `feat/large-indoor` | `scenarios/large_indoor/` MJCF (50×50, corridors, doorways) + config, with the open-top/lighting/handle-camera treatment. Corridor cross with 8 rooms; doorways 6 cells / 1.2 m against a 4-cell floor (`2r + 1` plus one cell of discretization slop), every wall face on a 0.2 m lattice | 4c (design constraint) | ✅ merged (PR #13) — [plan](sprint-2/feature-5-large-indoor.md) |
+| 6 | `feat/sprint2-integration` | Multi-drone config schema + validation, CLI driving `CentralizedMaster`, multi-drone `--view`, e2e + acceptance suites, scaling-KPI check, `docs/design.md`, `--visit-heatmaps` diagnostic | 4, 5 | ✅ implemented — PR pending — [plan](sprint-2/feature-6-integration.md) |
+| 7 | `feat/information-gain-frontier` | `planning`: `InformationGainFrontier` — score candidate **viewpoints** by expected information gain within sensor range, instead of scoring frontier cells and flying to them. The `FrontierStrategy` seam's named second implementation | 6 | ☐ next |
+
+## Locked decisions
+
+1. **`CURRENT_SPRINT = 2`** — bumped at sprint start, so Sprint-1 tests become
+   the *regression* gate and new Sprint-2 tests are *progression*.
+2. **Movement stays teleport.** Each tick a drone teleports one cell-step along
+   its A\* path (no physics), preserving determinism. Physics-based flight is a
+   candidate for a *later* sprint after the project is otherwise complete.
+3. **Frontier detection lives in `mapping`** (`get_frontiers()` does detection +
+   clustering); `planning` only *selects* among the returned regions. Keeps the
+   dependency direction clean.
+4. **`get_frontiers()` returns clustered region centroids** (usable targets +
+   enables spreading), not raw cells. *The clustering algorithm itself is chosen
+   in Feature 1's plan — see [`docs/sprint-2/feature-1-frontier-detection.md`](sprint-2/feature-1-frontier-detection.md).*
+5. **Config schema changes** to support multiple drones (count + start
+   positions) and planning params. New scenario configs follow the new schema.
+
+## Cross-cutting constraints
+
+- **Determinism (hard requirement).** Same config + seed = identical run.
+  Process drones in sorted id order; sort frontier/candidate lists; break ties
+  deterministically. No unordered dict/set iteration in decision paths.
+- **Tests first.** For each feature, write the test signatures from the design
+  and review the cases *before* implementing (CLAUDE.md rule). New tests are
+  tagged `pytest.mark.sprint(2)` → they run as *progression*.
+- **Required coverage** on `mapping`, `planning`, `coordination` (≥70%).
+
+## KPIs / acceptance (verified in Feature 6)
+
+- Coverage ≥95% indoor; map accuracy ≥98% per-cell; zero collisions.
+- Scaling speedup ≥1.5× from 1→3 drones (small indoor).
+- Frontier reassignment latency <2s after a drone finishes/invalidates a target.
+- Large-indoor acceptance run compared to reference within tolerance.
+
+## Workflow
+
+```
+main
+ └── sprint-2                     (integration branch)
+      ├── feat/frontier-detection → merge into sprint-2
+      ├── feat/path-planner       → merge into sprint-2
+      ├── feat/frontier-strategy  → merge into sprint-2
+      ├── feat/coordination-master→ merge into sprint-2
+      ├── feat/large-indoor       → merge into sprint-2
+      └── feat/sprint2-integration→ merge into sprint-2
+ sprint-2 → open ONE PR → main    (when the whole sprint is green)
+```

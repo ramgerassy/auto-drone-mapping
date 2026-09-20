@@ -6,8 +6,9 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from PIL import Image
 
-from swarm_mapping.mapping.export import save_npz, save_png
+from swarm_mapping.mapping.export import save_npz, save_png, save_visit_heatmap
 from swarm_mapping.mapping.grid import OccupancyGrid
 from swarm_mapping.mapping.types import MapConfig
 
@@ -178,3 +179,54 @@ class TestSavePng:
         intensity = pixels[flipped_row, 3, 0]
         # 0.3 / 3.0 = 10% of ceiling → intensity ~180 (light gray)
         assert intensity > 150
+
+
+class TestVisitHeatmap:
+    """The per-drone visit-count diagnostic."""
+
+    def test_heatmap_renders_counts_over_the_map(self, tmp_path: Path) -> None:
+        """Visited cells are hot, walls stay dark, unvisited free stays white."""
+        grid = OccupancyGrid(
+            MapConfig(
+                resolution=1.0,
+                origin_x=0.0,
+                origin_y=0.0,
+                grid_width=4,
+                grid_height=4,
+            )
+        )
+        grid.log_odds[:] = -2.0  # free
+        grid.log_odds[3, 3] = 2.0  # one wall cell
+        visits = np.zeros((4, 4), dtype=np.int64)
+        visits[0, 0] = 1
+        visits[1, 1] = 50  # a hot spot
+
+        path = tmp_path / "visits.png"
+        save_visit_heatmap(visits, grid, path)
+
+        pixels = np.asarray(Image.open(path).convert("RGB"))
+        # Row 0 is the bottom of the image, so the array is flipped vertically.
+        assert tuple(pixels[3, 0]) != (255, 255, 255)  # visited once: hot
+        assert tuple(pixels[2, 1])[0] == 255  # hot spot is full red
+        assert tuple(pixels[2, 1])[1] < tuple(pixels[3, 0])[1]  # hotter = less green
+        assert tuple(pixels[0, 3]) == (70, 70, 78)  # the wall
+        assert tuple(pixels[3, 3]) == (255, 255, 255)  # free, never visited
+
+    def test_empty_visits_leave_the_map_untouched(self, tmp_path: Path) -> None:
+        """A drone that never moved must not paint the map."""
+        grid = OccupancyGrid(
+            MapConfig(
+                resolution=1.0,
+                origin_x=0.0,
+                origin_y=0.0,
+                grid_width=3,
+                grid_height=3,
+            )
+        )
+        grid.log_odds[:] = -2.0
+        path = tmp_path / "empty.png"
+
+        save_visit_heatmap(np.zeros((3, 3), dtype=np.int64), grid, path)
+
+        pixels = np.asarray(Image.open(path).convert("RGB"))
+        assert np.all(pixels == 255)
