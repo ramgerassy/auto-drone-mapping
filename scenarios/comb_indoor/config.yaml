@@ -90,5 +90,5 @@ coordination:
                               # is shaped to expose; a comparison run flips it.
   target_tolerance_cells: 0   # 0 = exact match (baseline). Raising it is the
                               # other half of the anti-thrash experiment.
-  no_progress_ticks: 200   # stop once 200 ticks resolve no new cell
+  no_progress_ticks: 800   # 200 truncated a mission by 26 points; see progress.md
   return_to_base_ticks: 150  # idle this long -> fly home and park

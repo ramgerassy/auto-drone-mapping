@@ -1207,3 +1207,89 @@ altitude. Feature 4b's "the teammate's height cell stays `-inf`" was a real
 regression test for a real bug, but it could only ever catch a height that was
 *present*, never one that was *wrong*. A channel with one possible value cannot
 fail an equality check. The new tests are the first that could.
+
+---
+
+## 2026-09-20 — The num_rays anomaly was two bugs and a red herring
+
+"More rays gives worse coverage" turned out not to be a statement about rays.
+Swept across a wide range on `large_indoor`, it is not monotonic at all:
+
+```
+ rays    cov   stopped        gap between rays at 12 m
+   12   1.33%  stalled        31.4 cells
+   24  97.36%  stalled        15.7
+   36  97.34%  stalled        10.5
+   72  95.71%  stalled         5.2
+  144  70.74%  stalled         2.6
+  288  97.35%  stalled         1.3
+```
+
+24 rays beats 144. Six times the rays, a third of the map. Whatever this is, it
+is not ray density — and every run stopped "stalled", which was the clue.
+
+### Bug 1 — `no_progress_ticks: 200` silently truncates missions
+
+```
+ rays  no_progress  ticks     cov   stopped
+   72          200   1074  95.71%  stalled
+   72          800   1674  95.71%  stalled
+   72            0   4000  95.71%      cap     <- more time changes nothing
+  144          200   1197  70.74%  stalled
+  144          800   4000  97.38%      cap     <- +26.6 points, same code
+  144            0   4000  97.38%      cap
+```
+
+At 144 rays the stop ended the mission with a third of the map unfound, and the
+run **reported itself finished**. Raised to 800 across all scenarios.
+
+This is a heuristic I added to make `large_indoor` terminate, and it is worth
+being clear about what it is: a stand-in for "the swarm has nothing left to do"
+that cannot distinguish that from "the swarm is between discoveries". `max_ticks`
+is the real backstop; this only exists to avoid burning it.
+
+### Bug 2 — nothing. 72 rays really does plateau at 95.71%
+
+Unchanged at 200, 800, or with the check disabled for 4000 ticks. That one is a
+genuine property of the run, not a truncation.
+
+### The red herring
+
+Once truncation is excluded, coverage across 24-288 rays sits at 95.7-97.4%.
+That spread is **which trajectory a configuration happens to take**, not how
+densely it scans. Changing ray count changes what is seen first, which changes
+every frontier decision after it. Two runs of the same code over the same map
+diverge because the sensing perturbed the sequence, not because one sensed
+better.
+
+12 rays is the one real geometric failure: 31-cell gaps at range, 1.33%
+coverage, correctly hopeless.
+
+### And it overturned the allocation verdict — again
+
+The allocation benchmark was run before the elevation sweep. Re-run on current
+code:
+
+```
+variant    ticks     cov  revis   bal  union
+baseline    1074  95.71%    295   96%   2343   <- now the WORST coverage
+B           1049  97.36%    229   92%   2573
+A: global   1177  97.37%    423   93%   2682
+A+B         1112  97.36%    253   92%   2704
+```
+
+**A no longer fails the coverage KPI.** It was rejected on 87.4%; it now reaches
+97.37%. Identical at `no_progress_ticks` 200 and 800, so this is not the
+truncation — it is the elevation sweep. Better sensing changed which allocation
+is better, which in hindsight is unsurprising: allocation decides where drones
+go, and what they can see decides what is worth going to.
+
+All three variants now beat the baseline on coverage. The baseline's one
+remaining win is workload balance (96%), and it explores the least ground of
+the four (2343 cells against 2704).
+
+**The lesson is about method, not allocation.** Every benchmark conclusion in
+this project has been conditional on the sensing model, and the sensing model
+had a bug that made a third of the obstacles invisible. Comparing coordination
+strategies on top of that measured the wrong system. Conclusions drawn before
+2026-09-20 should be re-derived, not cited.

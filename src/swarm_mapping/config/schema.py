@@ -299,7 +299,15 @@ class CoordinationSettings:
             condition is therefore always true. It was removed rather than
             shipped as a knob that never changes anything.
         no_progress_ticks: Consecutive ticks without a newly classified cell
-            after which the mission stops. Wall-surface cells drift across the
+            after which the mission stops.
+
+            **Set this generously.** It is a heuristic standing in for "the
+            swarm has nothing left to do", and when it fires early it truncates
+            a mission silently — the run reports itself finished. Measured at
+            144 sensor rays on large_indoor: a value of 200 ended the mission at
+            **70.74%** coverage where 800 reached **97.38%**, a 26-point loss
+            from the same code. `max_ticks` is the real backstop; this exists
+            only to avoid burning it. Wall-surface cells drift across the
             classification bands and keep emitting small frontier regions, a
             few of them transiently reachable, so a swarm with nothing left to
             find can hold assignments indefinitely and never satisfy "every
