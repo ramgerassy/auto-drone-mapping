@@ -231,6 +231,8 @@ def build_mission(config: ScenarioConfig, drones: int | None = None) -> Mission:
         engine,
         num_rays=config.sensor.num_rays,
         max_range=config.sensor.max_range,
+        elevation_layers=config.sensor.elevation_layers,
+        elevation_max_deg=config.sensor.elevation_max_deg,
         exclusion_radius=config.sensor.exclusion_radius,
     )
 

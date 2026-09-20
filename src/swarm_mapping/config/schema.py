@@ -172,12 +172,21 @@ class SensorSettings:
     Attributes:
         num_rays: Angular samples per scan for the single modeled sensor.
         max_range: Maximum sensor range in metres.
+        elevation_layers: Elevation bands per scan. 1 is a flat horizontal
+            sweep, which records the flight altitude into every occupied cell
+            and nothing else — the map's height channel only carries
+            information when this is greater than 1.
+        elevation_max_deg: Highest band, degrees above horizontal. Bands span
+            0 to this, upward only: a downward ray strikes the floor and the
+            mapper would record it as an obstacle.
         exclusion_radius: Radius around a teammate's centre within which a hit
             is attributed to that teammate rather than the environment.
     """
 
     num_rays: int
     max_range: float
+    elevation_layers: int
+    elevation_max_deg: float
     exclusion_radius: float
 
 
@@ -448,6 +457,12 @@ def parse_config(raw: Any) -> ScenarioConfig:
         sensor=SensorSettings(
             num_rays=_positive_int(sensor_section, "sensor", "num_rays"),
             max_range=_positive(sensor_section, "sensor", "max_range"),
+            elevation_layers=_positive_int(
+                sensor_section, "sensor", "elevation_layers"
+            ),
+            elevation_max_deg=_non_negative(
+                sensor_section, "sensor", "elevation_max_deg"
+            ),
             exclusion_radius=_non_negative(
                 sensor_section, "sensor", "exclusion_radius"
             ),

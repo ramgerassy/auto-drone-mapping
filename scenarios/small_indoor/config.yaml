@@ -18,7 +18,7 @@ drones:
     - [0.0, 0.0, 1.0]
     - [0.0, -1.2, 1.0]
     - [0.0, 1.2, 1.0]
-  altitude: 1.0       # flight height in metres above the floor (floor at z=0)
+  altitude: 0.3          # low, so a horizontal ray sees anything taller
 
 sensor:
   # Models one Slamtec RPLIDAR A2M8: a 360-degree 2D scanning LiDAR rated to
@@ -29,6 +29,8 @@ sensor:
   # modeled; sensor mass, motor power draw, and spin dynamics are out of scope.
   num_rays: 72        # 5-degree spacing around the horizontal plane
   max_range: 12.0     # meters — operational cap ~25% below the 16 m rating, so
+  elevation_layers: 5   # 1 = flat sweep, which records no height at all
+  elevation_max_deg: 20.0   # upward only; a downward ray would hit the floor
                       # returns stay out of the unreliable near-max zone
   exclusion_radius: 0.30  # metres — hits inside this radius of a teammate's
                       # centre are that teammate, not the environment. Sized to

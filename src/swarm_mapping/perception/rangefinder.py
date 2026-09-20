@@ -68,6 +68,15 @@ class Rangefinder:
         angular_range: Angular coverage in radians. Default 2π
             (full 360° sweep). Rays are centered on the drone's
             forward (+x) direction.
+        elevation_layers: How many elevation bands the sweep has. 1 is a flat
+            horizontal sweep. More make `hit_point[2]` vary with what was
+            struck, which is the only way the map's height channel can carry
+            information — a flat sweep records the flight altitude and nothing
+            else.
+        elevation_max_deg: The highest band, in degrees above horizontal.
+            Bands run from 0 up to this, **never below**: a downward ray
+            strikes the floor and would be recorded as an obstacle, and flying
+            low is what makes an upward-only fan sufficient.
         exclusion_radius: Radius in metres around a teammate's centre within
             which a hit is attributed to that teammate rather than to the
             environment, and re-encoded as a MISS. Must be 0.0 (filtering
@@ -87,6 +96,8 @@ class Rangefinder:
         max_range: float = 10.0,
         angular_range: float = 2 * math.pi,
         exclusion_radius: float = DRONE_EXCLUSION_RADIUS,
+        elevation_layers: int = 1,
+        elevation_max_deg: float = 0.0,
     ) -> None:
         # Squaring destroys the sign, so a negative radius would silently
         # behave like its absolute value. Reject it before that can happen.
@@ -106,6 +117,18 @@ class Rangefinder:
         self._num_rays = num_rays
         self._max_range = max_range
         self._angular_range = angular_range
+        if elevation_layers < 1:
+            msg = f"elevation_layers must be >= 1, got {elevation_layers}"
+            raise ValueError(msg)
+        if elevation_max_deg < 0.0:
+            msg = (
+                f"elevation_max_deg must be >= 0 (upward only), got "
+                f"{elevation_max_deg}. A downward ray hits the floor and the "
+                "mapper would record it as an obstacle."
+            )
+            raise ValueError(msg)
+        self._elevation_layers = elevation_layers
+        self._elevation_max = math.radians(elevation_max_deg)
         self._exclusion_radius = exclusion_radius
         # Compared against squared distances, so the sqrt never runs.
         self._exclusion_radius_sq = exclusion_radius * exclusion_radius
@@ -114,26 +137,52 @@ class Rangefinder:
         self._body_directions = self._compute_directions()
 
     def _compute_directions(self) -> NDArray[np.float64]:
-        """Compute evenly-spaced ray directions in the body frame.
+        """Compute ray directions in the body frame.
+
+        `num_rays` azimuth samples per elevation band, bands running from
+        horizontal up to `elevation_max_deg`. The horizontal band comes first,
+        so `_is_navigation_plane` is a simple index test and the flat-sweep
+        case is byte-identical to the single-band layout.
 
         Returns:
-            Array of unit direction vectors, shape (num_rays, 3).
-            Rays are in the XY plane, centered on +x axis.
+            Unit direction vectors, shape (num_rays * elevation_layers, 3).
         """
         start_angle = -self._angular_range / 2
-        angles = np.linspace(
+        azimuths = np.linspace(
             start_angle,
             start_angle + self._angular_range,
             self._num_rays,
             endpoint=False,
         )
+        if self._elevation_layers == 1:
+            elevations = np.zeros(1)
+        else:
+            elevations = np.linspace(0.0, self._elevation_max, self._elevation_layers)
 
-        directions = np.zeros((self._num_rays, 3))
-        directions[:, 0] = np.cos(angles)
-        directions[:, 1] = np.sin(angles)
-        # z = 0: rays are horizontal
+        directions = np.zeros((self._num_rays * self._elevation_layers, 3))
+        for band, elevation in enumerate(elevations):
+            lo = band * self._num_rays
+            horizontal = np.cos(elevation)
+            directions[lo : lo + self._num_rays, 0] = np.cos(azimuths) * horizontal
+            directions[lo : lo + self._num_rays, 1] = np.sin(azimuths) * horizontal
+            directions[lo : lo + self._num_rays, 2] = np.sin(elevation)
 
         return directions
+
+    def _is_navigation_plane(self, index: int) -> bool:
+        """Whether ray `index` lies in the drone's horizontal plane.
+
+        Only these may claim the space they crossed is free; see
+        `RayObservation.navigation_plane`.
+
+        Args:
+            index: Position in `_body_directions`.
+
+        Returns:
+            True for the first band, which `_compute_directions` builds at
+            zero elevation.
+        """
+        return index < self._num_rays
 
     def scan(self, drone_id: int) -> ScanResult:
         """Perform a rangefinder scan for the given drone.
@@ -185,6 +234,7 @@ class Rangefinder:
                         max_range=stop,
                         distance=None,
                         hit_point=None,
+                        navigation_plane=self._is_navigation_plane(i),
                     )
                 else:
                     obs = RayObservation(
@@ -193,6 +243,7 @@ class Rangefinder:
                         max_range=self._max_range,
                         distance=hit.distance,
                         hit_point=hit.hit_point.copy(),
+                        navigation_plane=self._is_navigation_plane(i),
                     )
             else:
                 # Miss or beyond max range
@@ -202,6 +253,7 @@ class Rangefinder:
                     max_range=self._max_range,
                     distance=None,
                     hit_point=None,
+                    navigation_plane=self._is_navigation_plane(i),
                 )
 
             observations.append(obs)

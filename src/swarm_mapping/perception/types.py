@@ -31,6 +31,15 @@ class RayObservation:
             beyond the sensor's rated range).
         hit_point: World-coordinate hit point, shape (3,), or None
             if the ray missed.
+        navigation_plane: Whether this ray travelled in the drone's horizontal
+            plane, and may therefore claim the space it crossed is free.
+
+            An elevated ray carries no information about what lies *beneath*
+            it. Letting one write free space erases the obstacles the sweep
+            exists to find: a ray passing over a 0.8 m crate and striking a
+            wall ten metres beyond would mark the crate's own cell free, and
+            with one occupied update (+0.847) against four free ones (-1.62)
+            per scan, the crate loses.
     """
 
     origin: NDArray[np.float64]
@@ -38,6 +47,7 @@ class RayObservation:
     max_range: float
     distance: float | None
     hit_point: NDArray[np.float64] | None
+    navigation_plane: bool = True
 
 
 @dataclass(frozen=True)

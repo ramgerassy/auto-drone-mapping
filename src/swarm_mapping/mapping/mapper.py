@@ -66,6 +66,9 @@ class Mapper:
         For a MISS: trace from origin for max_range. Mark all cells
         as free.
 
+        Both free-space cases apply only to navigation-plane rays. An elevated
+        ray contributes its endpoint's occupancy and height and nothing else.
+
         Args:
             obs: A single ray observation.
         """
@@ -94,17 +97,18 @@ class Mapper:
         if not cells:
             return
 
+        # An elevated ray reports only what it struck. It passed *over*
+        # everything between, so it knows nothing about that ground and must
+        # not claim it is free — see `RayObservation.navigation_plane`.
         if is_hit:
-            # All cells except the last are free
-            for col, row in cells[:-1]:
-                if self._grid.in_bounds(col, row):
-                    self._grid.update_free(col, row)
-            # Last cell is occupied
+            if obs.navigation_plane:
+                for col, row in cells[:-1]:
+                    if self._grid.in_bounds(col, row):
+                        self._grid.update_free(col, row)
             last_col, last_row = cells[-1]
             if self._grid.in_bounds(last_col, last_row):
                 self._grid.update_occupied(last_col, last_row, hit_z)
-        else:
-            # All cells are free
+        elif obs.navigation_plane:
             for col, row in cells:
                 if self._grid.in_bounds(col, row):
                     self._grid.update_free(col, row)

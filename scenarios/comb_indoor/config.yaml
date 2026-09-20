@@ -23,7 +23,7 @@ drones:
     - [0.0, 0.0, 1.0]
     - [-13.0, 0.0, 1.0]
     - [13.0, 0.0, 1.0]
-  altitude: 1.0
+  altitude: 0.3          # low, so a horizontal ray sees anything taller
 
 sensor:
   # Same Slamtec RPLIDAR A2M8 model as the other scenarios: 360-degree 2D
@@ -32,6 +32,8 @@ sensor:
   # scenes varies the geometry and nothing else.
   num_rays: 72        # 5-degree spacing
   max_range: 12.0     # metres — operational cap ~25% below the 16 m rating
+  elevation_layers: 5   # 1 = flat sweep, which records no height at all
+  elevation_max_deg: 20.0   # upward only; a downward ray would hit the floor
   exclusion_radius: 0.30  # metres — teammate filter; sized to the body's
                       # corner radius. A 1.2 m rib has no second lane, so two
                       # drones meeting in one would otherwise map each other

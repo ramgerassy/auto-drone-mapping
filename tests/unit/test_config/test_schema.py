@@ -40,6 +40,8 @@ def valid_config() -> dict[str, Any]:
         "sensor": {
             "num_rays": 72,
             "max_range": 12.0,
+            "elevation_layers": 5,
+            "elevation_max_deg": 20.0,
             "exclusion_radius": 0.30,
         },
         "map": {

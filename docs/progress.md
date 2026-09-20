@@ -1130,3 +1130,80 @@ the `--assignment global` run (87.4% coverage), not the 97.6% baseline — the
 under-explored wedges they noticed are the global-allocation failure already
 recorded above, not a mapping fault. The 97.6% map is near-uniformly free with
 both visible crates present.
+
+---
+
+## 2026-09-20 — Elevation sweep: the map is 2.5D now (Sprint 3, Feature 8)
+
+Before: the height channel held **one** distinct value, 1.0, the flight
+altitude. After, on `small_indoor`:
+
+```
+occupied cells with a height: 1735
+distinct heights: 163   range 0.30 .. 3.00 m
+```
+
+And on `large_indoor`, every crate is found with its true top:
+
+```
+crate       true top   mapped?   recorded height
+crate_ne       0.8 m      yes           0.80 m   <- previously invisible
+crate_nw       1.2 m      yes           1.20 m
+crate_se       1.0 m      yes           1.00 m
+crate_sw       0.8 m      yes           0.80 m   <- previously invisible
+```
+
+**Two changes, solving different halves.**
+
+*Fly low.* Altitude 1.0 -> 0.3 m. A horizontal ray detects everything taller
+than the altitude **at any range**, which an angled fan cannot: from 1.0 m a
+-10° ray only reaches down to 0.47 m at 3 m, and less further out.
+Height-independent detection is the stronger guarantee, and it is what the low
+plane buys. It also makes the user's original two-phase proposal unnecessary.
+
+*Fan upward.* Elevation bands 0° to 20°, so `hit_point[2]` varies with what was
+struck. **Upward only**: a downward ray strikes the floor and the mapper would
+record a ring of phantom walls around every drone. Flying low is what makes an
+upward-only fan sufficient, so the two halves depend on each other.
+
+### The rule that stops it erasing what it finds
+
+The mapper projects every ray to 2D and marks all cells before the endpoint
+free. An upward ray passing *over* a 0.8 m crate and striking a wall ten metres
+beyond would mark the crate's own cell free — and at one occupied update
+(+0.847) against four free ones (-1.62) per scan, the crate loses. The feature
+would have deleted exactly the obstacles it was added to find.
+
+So: **only navigation-plane rays write free space.** `RayObservation` carries
+`navigation_plane`; elevated rays contribute occupancy and height and nothing
+else. This is not a workaround — an elevated ray genuinely carries no
+information about the ground beneath it, and claiming otherwise was always
+wrong. Verified discriminating: removing the rule fails the test.
+
+### What it cost, and what it changed
+
+Rays per scan go from 72 to 360 (azimuth x bands), and ray-casting was already
+the dominant per-tick cost. Against that, `large_indoor` finished in **1074
+ticks against 1498**, because the drones now see more per scan. Coverage moved
+97.6% -> 95.7%, still over the KPI: the crates are real obstacles now and
+occupy cells that used to be flown over.
+
+**Every previous benchmark baseline is superseded.** The scenarios pose a
+different problem now — four obstacles that must be routed around rather than
+ignored.
+
+### The narrowing worth naming
+
+With the drone unable to climb over anything, height stops being a navigation
+input and becomes map *output* — a property a consumer reads, not something the
+planner consults. This is 2.5D-for-mapping, not 2.5D-for-planning. Worth
+stating because CLAUDE.md's "2.5D mapping only" does not distinguish them, and
+the difference decides whether a height channel is load-bearing or descriptive.
+
+### The tests were green while measuring nothing
+
+Every prior assertion on the height layer checked `-inf` (absent) or the flight
+altitude. Feature 4b's "the teammate's height cell stays `-inf`" was a real
+regression test for a real bug, but it could only ever catch a height that was
+*present*, never one that was *wrong*. A channel with one possible value cannot
+fail an equality check. The new tests are the first that could.

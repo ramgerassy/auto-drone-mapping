@@ -17,13 +17,15 @@ drones:
     - [0.0, 0.0, 1.0]
     - [0.0, -1.2, 1.0]
     - [0.0, 1.2, 1.0]
-  altitude: 1.0
+  altitude: 0.3          # low, so a horizontal ray sees anything taller
 
 sensor:
   # Same Slamtec RPLIDAR A2M8 model as small_indoor: 360-degree 2D scanning
   # LiDAR, 16 m rated. num_rays is that one sensor's angular samples per scan.
   num_rays: 72        # 5-degree spacing
   max_range: 12.0     # metres — operational cap ~25% below the 16 m rating
+  elevation_layers: 5   # 1 = flat sweep, which records no height at all
+  elevation_max_deg: 20.0   # upward only; a downward ray would hit the floor
   exclusion_radius: 0.30  # metres — teammate filter; sized to the body's
                       # corner radius. Matters here: three drones start within
                       # 1.2 m of each other and would otherwise map each other
