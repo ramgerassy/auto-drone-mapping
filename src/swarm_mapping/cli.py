@@ -357,6 +357,14 @@ def run_pipeline(
     )
 
     viewer = _open_viewer(mission) if view else None
+    if viewer is not None:
+        # Paint the starting frame before any work happens. The passive viewer
+        # only composites the scene on `sync()`, and the loop below does not
+        # reach its first one until a whole tick has run — with global
+        # allocation that tick floods a cost field per drone, so the window can
+        # sit blank long enough to look like it never opened.
+        viewer.sync()
+        print("Viewer open — close the window to stop early.", flush=True)
 
     # Counted here rather than in the coordinator: this is a diagnostic, and
     # `coordination` should not carry state that only a debug flag reads.
