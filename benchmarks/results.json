@@ -12,7 +12,14 @@
     "idle": 0.006,
     "swaps": 128.7,
     "spread": 0.744,
-    "seconds": 8.9,
+    "balance": 0.755,
+    "union": 1283,
+    "per_drone": [
+      611,
+      461,
+      601
+    ],
+    "seconds": 8.7,
     "label": "baseline"
   },
   {
@@ -28,7 +35,14 @@
     "idle": 0.001,
     "swaps": 59.0,
     "spread": 0.751,
-    "seconds": 9.3,
+    "balance": 0.558,
+    "union": 1308,
+    "per_drone": [
+      712,
+      397,
+      637
+    ],
+    "seconds": 10.0,
     "label": "B: tolerance"
   },
   {
@@ -44,7 +58,14 @@
     "idle": 0.004,
     "swaps": 119.7,
     "spread": 0.734,
-    "seconds": 13.2,
+    "balance": 0.669,
+    "union": 1260,
+    "per_drone": [
+      645,
+      435,
+      650
+    ],
+    "seconds": 13.3,
     "label": "A: global"
   },
   {
@@ -60,24 +81,15 @@
     "idle": 0.001,
     "swaps": 50.0,
     "spread": 0.714,
-    "seconds": 10.5,
+    "balance": 0.553,
+    "union": 1358,
+    "per_drone": [
+      716,
+      396,
+      675
+    ],
+    "seconds": 11.3,
     "label": "A+B"
-  },
-  {
-    "scenario": "comb_indoor",
-    "variant": "auto",
-    "tolerance": 3,
-    "drones": 3,
-    "ticks": 1104,
-    "capped": false,
-    "coverage": 0.1878,
-    "revisited": 616,
-    "worst_cell": 11,
-    "idle": 0.001,
-    "swaps": 50.0,
-    "spread": 0.714,
-    "seconds": 10.2,
-    "label": "auto+B"
   },
   {
     "scenario": "large_indoor",
@@ -92,7 +104,14 @@
     "idle": 0.029,
     "swaps": 157.0,
     "spread": 0.946,
-    "seconds": 42.7,
+    "balance": 0.64,
+    "union": 2919,
+    "per_drone": [
+      770,
+      1204,
+      1103
+    ],
+    "seconds": 44.7,
     "label": "baseline"
   },
   {
@@ -108,7 +127,14 @@
     "idle": 0.0,
     "swaps": 61.7,
     "spread": 0.928,
-    "seconds": 54.4,
+    "balance": 0.736,
+    "union": 2874,
+    "per_drone": [
+      1186,
+      1022,
+      873
+    ],
+    "seconds": 56.7,
     "label": "B: tolerance"
   },
   {
@@ -124,7 +150,14 @@
     "idle": 0.0,
     "swaps": 117.3,
     "spread": 0.982,
-    "seconds": 65.3,
+    "balance": 0.365,
+    "union": 2165,
+    "per_drone": [
+      1133,
+      656,
+      414
+    ],
+    "seconds": 67.4,
     "label": "A: global"
   },
   {
@@ -140,24 +173,15 @@
     "idle": 0.0,
     "swaps": 77.3,
     "spread": 0.911,
-    "seconds": 57.1,
+    "balance": 0.551,
+    "union": 2668,
+    "per_drone": [
+      710,
+      907,
+      1288
+    ],
+    "seconds": 59.3,
     "label": "A+B"
-  },
-  {
-    "scenario": "large_indoor",
-    "variant": "auto",
-    "tolerance": 3,
-    "drones": 3,
-    "ticks": 1445,
-    "capped": false,
-    "coverage": 0.9758,
-    "revisited": 753,
-    "worst_cell": 7,
-    "idle": 0.0,
-    "swaps": 77.3,
-    "spread": 0.911,
-    "seconds": 58.0,
-    "label": "auto+B"
   },
   {
     "scenario": "small_indoor",
@@ -172,7 +196,14 @@
     "idle": 0.05,
     "swaps": 25.0,
     "spread": 1.0,
-    "seconds": 5.9,
+    "balance": 0.97,
+    "union": 493,
+    "per_drone": [
+      164,
+      167,
+      162
+    ],
+    "seconds": 5.5,
     "label": "baseline"
   },
   {
@@ -188,7 +219,14 @@
     "idle": 0.155,
     "swaps": 21.0,
     "spread": 1.0,
-    "seconds": 7.8,
+    "balance": 0.803,
+    "union": 513,
+    "per_drone": [
+      193,
+      155,
+      165
+    ],
+    "seconds": 7.5,
     "label": "B: tolerance"
   },
   {
@@ -204,7 +242,14 @@
     "idle": 0.035,
     "swaps": 28.3,
     "spread": 0.919,
-    "seconds": 20.8,
+    "balance": 0.92,
+    "union": 566,
+    "per_drone": [
+      213,
+      203,
+      196
+    ],
+    "seconds": 21.1,
     "label": "A: global"
   },
   {
@@ -220,23 +265,14 @@
     "idle": 0.067,
     "swaps": 20.0,
     "spread": 0.998,
-    "seconds": 21.1,
+    "balance": 0.797,
+    "union": 569,
+    "per_drone": [
+      198,
+      207,
+      165
+    ],
+    "seconds": 21.5,
     "label": "A+B"
-  },
-  {
-    "scenario": "small_indoor",
-    "variant": "auto",
-    "tolerance": 3,
-    "drones": 3,
-    "ticks": 239,
-    "capped": false,
-    "coverage": 0.9849,
-    "revisited": 103,
-    "worst_cell": 2,
-    "idle": 0.067,
-    "swaps": 20.0,
-    "spread": 0.998,
-    "seconds": 20.6,
-    "label": "auto+B"
   }
 ]

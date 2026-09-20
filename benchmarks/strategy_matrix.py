@@ -27,8 +27,12 @@ Metrics, and why each is here:
   shed it.
 - **swaps** — target changes per drone. Distinguishes "explores efficiently"
   from "keeps changing its mind".
-- **spread** — fraction of visited cells reached by exactly one drone. Low
-  means drones covered the same ground; it is the division-of-labour measure.
+- **balance** — smallest / largest per-drone cell count. The
+  division-of-labour measure. Deliberately *not* "fraction of cells reached by
+  exactly one drone": that is confounded by coverage, since a swarm that quits
+  early has fewer chances to overlap and scores well for the wrong reason.
+- **union** — distinct cells any drone entered. Guards balance the way coverage
+  guards ticks: splitting a smaller job evenly is not an improvement.
 """
 
 from __future__ import annotations
@@ -105,6 +109,8 @@ def run(scenario: str, mode: str, tolerance: int) -> dict[str, Any]:
     touched_by = (stacked > 0).sum(axis=0)
     visited = int(np.count_nonzero(touched_by))
     exclusive = int(np.count_nonzero(touched_by == 1))
+    per_drone = [int(np.count_nonzero(v > 0)) for v in visits.values()]
+    balance = min(per_drone) / max(per_drone) if min(per_drone) else 0.0
 
     return {
         "scenario": scenario,
@@ -119,6 +125,9 @@ def run(scenario: str, mode: str, tolerance: int) -> dict[str, Any]:
         "idle": round(sum(idle.values()) / (len(idle) * max(1, master.tick_count)), 3),
         "swaps": round(sum(swaps.values()) / len(swaps), 1),
         "spread": round(exclusive / visited, 3) if visited else 0.0,
+        "balance": round(balance, 3),
+        "union": visited,
+        "per_drone": per_drone,
         "seconds": round(time.time() - started, 1),
     }
 
@@ -136,7 +145,7 @@ def main() -> None:
     header = (
         f"{'scenario':14s} {'variant':14s} {'ticks':>6s} {'cov':>7s} "
         f"{'revis':>6s} {'worst':>6s} {'idle':>6s} {'swaps':>6s} "
-        f"{'spread':>7s} {'sec':>6s}"
+        f"{'bal':>6s} {'union':>6s} {'sec':>6s}"
     )
     print(header)
     print("-" * len(header))
@@ -149,7 +158,7 @@ def main() -> None:
                 f"{scenario:14s} {label:14s} {row['ticks']:6d} {row['coverage']:6.1%} "
                 f"{row['revisited']:6d} {row['worst_cell']:6d} {row['idle']:5.0%} "
                 f"{row['swaps']:6.1f} "
-                f"{row['spread']:6.1%} {row['seconds']:6.1f}"
+                f"{row['balance']:5.0%} {row['union']:6d} {row['seconds']:6.1f}"
                 + ("  CAPPED" if row["capped"] else ""),
                 flush=True,
             )

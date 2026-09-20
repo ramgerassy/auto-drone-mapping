@@ -28,6 +28,7 @@ from swarm_mapping.coordination.master import CentralizedMaster
 from swarm_mapping.mapping.export import (
     save_npz,
     save_png,
+    save_route_png,
     save_visit_heatmap,
 )
 from swarm_mapping.mapping.grid import OccupancyGrid
@@ -37,6 +38,7 @@ from swarm_mapping.perception.rangefinder import Rangefinder
 from swarm_mapping.planning.frontier_strategy import NearestFrontier
 from swarm_mapping.planning.path_planner import AStarPlanner
 from swarm_mapping.simulation.engine import SimulationEngine
+from swarm_mapping.visualization.path_log import PathLog, save_path_log
 from swarm_mapping.visualization.renderer import LiveViewer
 
 logger = logging.getLogger(__name__)
@@ -368,6 +370,7 @@ def run_pipeline(
 
     # Counted here rather than in the coordinator: this is a diagnostic, and
     # `coordination` should not carry state that only a debug flag reads.
+    path_log = PathLog() if visit_heatmaps else None
     visits: dict[int, NDArray[np.int64]] = {}
     if visit_heatmaps:
         visits = {
@@ -384,6 +387,8 @@ def run_pipeline(
             for drone_id, counts in visits.items():
                 col, row = master.drone_states[drone_id].cell
                 counts[row, col] += 1
+            if path_log is not None:
+                path_log.record(master.drone_states)
 
             if viewer is not None and viewer.is_running:
                 viewer.sync()
@@ -403,9 +408,31 @@ def run_pipeline(
         save_npz(mission.mapper.grid, npz_path)
         save_png(mission.mapper.grid, png_path, max_height=config.map.max_height)
 
+        if path_log is not None:
+            save_path_log(path_log, output_dir / "paths.json")
+            print(
+                f"Division of labour: "
+                f"{path_log.exclusive_fraction():.1%} of visited cells "
+                f"reached by exactly one drone "
+                f"({len(path_log.shared_cells())} shared)"
+            )
+
         for drone_id, counts in sorted(visits.items()):
             heatmap_path = output_dir / f"visits_drone_{drone_id}.png"
             save_visit_heatmap(counts, mission.mapper.grid, heatmap_path)
+            if path_log is not None:
+                route = path_log.tracks[drone_id].route()
+                save_route_png(
+                    route,
+                    mission.mapper.grid,
+                    output_dir / f"route_drone_{drone_id}.png",
+                )
+                stats = path_log.summary()[drone_id]
+                print(
+                    f"  route {len(route)} steps, "
+                    f"{stats['revisited_cells']} cells revisited, "
+                    f"longest revisit gap {stats['longest_gap']} ticks"
+                )
             print(
                 f"Drone {drone_id}: {int(np.sum(counts > 0))} cells visited, "
                 f"{int(np.sum(counts > 1))} revisited, "
