@@ -1293,3 +1293,43 @@ this project has been conditional on the sensing model, and the sensing model
 had a bug that made a third of the obstacles invisible. Comparing coordination
 strategies on top of that measured the wrong system. Conclusions drawn before
 2026-09-20 should be re-derived, not cited.
+
+### The allocation benchmark, re-measured on the fixed sensor
+
+```
+scenario       variant    ticks     cov  revis   bal  union
+comb_indoor    baseline     389   19.0%    135   81%    992
+comb_indoor    B            372   19.1%    244   85%    831
+comb_indoor    A            389   19.0%    135   81%    992   <- identical to baseline
+comb_indoor    A+B          440   19.1%    320   84%    887
+large_indoor   baseline    1674   95.7%    295   96%   2343   <- worst coverage
+large_indoor   B           1049   97.4%    229   92%   2573
+large_indoor   A           1177   97.4%    423   92%   2682
+large_indoor   A+B         1112   97.4%    253   92%   2704
+small_indoor   baseline     316   98.4%     77   58%    651
+small_indoor   B            223   97.2%      9   36%    389   <- 40% idle
+small_indoor   A            193   98.2%     19   94%    556
+small_indoor   A+B          197   98.3%     18   89%    554
+```
+
+**A+B adopted**, and set in all three scenario configs. It is the only variant
+that beats the baseline on every map and has no bad case: 34% faster on
+`large_indoor` at 97.4% against 95.7%, exploring the most ground of the four,
+and 38% faster on `small_indoor` with a quarter of the revisits.
+
+B alone is fastest on `large_indoor` but leaves drones idle 40% of the time on
+`small_indoor` with a 36% workload split. A alone now reaches 97.4% — it was
+rejected on 87.4%, and that number moved because the *sensor* changed, not the
+allocation.
+
+`comb_indoor` has stopped discriminating: baseline and A produce byte-identical
+runs, and mission length fell from ~1100 ticks to ~390. It was built to expose
+thrashing that the elevation sweep largely removed. It still earns its place as
+a clearance and doorway test; it is no longer an allocation benchmark.
+
+**Three verdicts on the same question, and only the middle one was an error.**
+Revision 1 recommended A+B on a metric confounded by coverage. Revision 2
+rejected everything after that metric was corrected. Revision 3 recommends A+B
+again — not because revision 2 was wrong about the data it had, but because the
+system underneath it changed. Worth separating: a wrong measurement is a
+mistake, a changed system is not.

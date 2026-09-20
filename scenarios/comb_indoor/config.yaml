@@ -85,10 +85,10 @@ coordination:
   max_ticks: 4000     # safety cap — fewer cells than large_indoor, but a rib
                       # is a there-and-back trip, so path length per cell is
                       # higher. A blocked mission must still end.
-  assignment: greedy          # or 'global'. The baseline whose measured fault
+  assignment: global          # A+B, see docs/sprint-3/feature-7-*.md
                               # — one drone covering half the map — this scene
                               # is shaped to expose; a comparison run flips it.
-  target_tolerance_cells: 0   # 0 = exact match (baseline). Raising it is the
+  target_tolerance_cells: 3   # A+B
                               # other half of the anti-thrash experiment.
   no_progress_ticks: 800   # 200 truncated a mission by 26 points; see progress.md
   return_to_base_ticks: 150  # idle this long -> fly home and park

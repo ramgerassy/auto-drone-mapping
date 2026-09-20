@@ -68,8 +68,8 @@ coordination:
   min_separation: 0.5
   max_wait_ticks: 5   # blocked ticks before a drone abandons its frontier
   max_ticks: 4000     # safety cap — 250x250 cells and 8 rooms need more ticks
-  assignment: greedy          # or 'global'
-  target_tolerance_cells: 0   # 0 = exact match (baseline)
+  assignment: global          # A+B, see docs/sprint-3/feature-7-*.md
+  target_tolerance_cells: 3   # A+B
   no_progress_ticks: 800   # 200 truncated a mission by 26 points; see progress.md
   return_to_base_ticks: 150  # idle this long -> fly home and park
                       # than small_indoor; a blocked mission must still end.
