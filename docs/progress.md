@@ -1455,3 +1455,42 @@ consistent with the backtracking account. At three drones it shows *more*
 corridor revisits (144 against 47) — the ring is a shared thoroughfare every
 drone circulates, where the cross is a junction they pass through. Different
 topologies, different bottlenecks, and neither is a strategy defect.
+
+### Addendum — five drones on the loop, and a confound in the comparison
+
+```
+loop_indoor   drones  ticks  t@95%   corridor rev  room rev  balance
+                   1   2296   2047             31        15     100%
+                   3   1432    807            144        38      85%
+                   5    688    641              1         0      86%
+```
+
+Five drones: **one corridor revisit, zero room revisits**, and 3.19x scaling
+1->5. That is not drone count doing the work. The five spawns sit on four ring
+legs plus a corner, so each drone owns a sector and never traverses; three
+spawns cover three of four legs, so they must travel to reach the south.
+
+**Which exposes a confound in the cross-map comparison above.**
+`large_indoor` clusters every spawn at the corridor junction; `loop_indoor`
+spreads them around the ring. The one-drone rows are clean — a single spawn
+either way — so the 13x room-revisit finding stands. The multi-drone rows were
+never like-for-like and should not be read as topology alone.
+
+Tested directly on `large_indoor`, three drones:
+
+```
+spawn layout            ticks  t@95%   corridor rev  room rev
+clustered (current)      1112    811             47        49
+spread along the arm     1152   1084             33        37
+```
+
+Spreading cuts revisits by a third and costs **33% more time to 95%**. So there
+is no general "spread the spawns" rule: the loop's result came from spawns
+matching that topology's natural sectors, and a cross has no sectors to match.
+Spawn placement is a real lever, it interacts with the floor plan, and it is not
+free.
+
+Worth noting what this means for the KPI numbers: **start positions are a tuned
+parameter of every scenario**, as load-bearing as the allocation policy, and
+nothing in the config says so. A scenario author picking spawns is choosing part
+of the result.

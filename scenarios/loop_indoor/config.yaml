@@ -24,6 +24,11 @@ drones:
     - [0.0, 14.4, 1.0]
     - [14.4, 0.0, 1.0]
     - [-14.4, 0.0, 1.0]
+    # Two more on the ring so the scaling KPI can be measured to five drones,
+    # matching large_indoor. The south leg and the north-east corner — still
+    # spread around the racetrack rather than clustered at one point.
+    - [0.0, -14.4, 1.0]
+    - [14.4, 14.4, 1.0]
   altitude: 0.3          # low, so a horizontal ray sees anything taller
 
 sensor:
