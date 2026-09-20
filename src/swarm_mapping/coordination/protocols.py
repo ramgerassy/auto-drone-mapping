@@ -22,7 +22,41 @@ class Coordinator(Protocol):
 
     @property
     def is_complete(self) -> bool:
-        """True when no drone can make further progress."""
+        """True when no drone can make further progress.
+
+        A *termination* signal, not a success one — it covers both "everything
+        is mapped" and "nothing left is reachable". Pair it with `is_blocked`
+        to tell the two apart.
+        """
+        ...
+
+    @property
+    def is_blocked(self) -> bool:
+        """True if the mission terminated with frontiers still on the map.
+
+        The question "did you finish or did you give up" is not specific to a
+        centralized master — a `DistributedAuction` owes the same answer — so
+        it belongs on the seam. A coordinator that can report only that it
+        stopped, and not what it stopped with, is under-specified: a run that
+        mapped 58% of a room and one that mapped all of it look identical from
+        outside.
+
+        **Not a pass/fail flag on its own.** Body-clearance inflation leaves
+        wall-adjacent frontiers that are visible but impossible to occupy, so a
+        fully successful mission normally terminates blocked. Callers must weigh
+        it against `unreachable_frontiers` and coverage — see
+        `CentralizedMaster.is_blocked` for the measured example.
+        """
+        ...
+
+    @property
+    def unreachable_frontiers(self) -> int:
+        """How many frontier regions were still detected at termination.
+
+        The magnitude behind `is_blocked`, and the number that makes it usable:
+        "stopped with 3 regions left" and "stopped with 200" are different
+        outcomes and want different responses.
+        """
         ...
 
     @property

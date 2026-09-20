@@ -12,6 +12,7 @@ discriminating signal over a full mission.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import get_protocol_members
 
 import numpy as np
 import pytest
@@ -65,6 +66,7 @@ def build_master(
     starts: dict[int, tuple[float, float]],
     min_separation: float = MIN_SEPARATION,
     resolution: float = RESOLUTION,
+    return_to_base_ticks: int = 0,
 ) -> tuple[CentralizedMaster, SimulationEngine, Mapper]:
     """Wire an engine, sensor, mapper and master over the tiny room."""
     positions = {
@@ -94,6 +96,7 @@ def build_master(
         altitude=ALTITUDE,
         min_separation=min_separation,
         max_wait_ticks=MAX_WAIT,
+        return_to_base_ticks=return_to_base_ticks,
     )
     return master, engine, mapper
 
@@ -436,13 +439,15 @@ class TestConstrainedPassage:
         has not made the environment unexplorable, which is how "inflate
         unknown cells too" or an oversized radius would fail.
         """
-        crossed, known, blocked = self.run_doorway(
-            tmp_path, gap_south=-0.5, gap_north=0.75
-        )
+        crossed, known, _ = self.run_doorway(tmp_path, gap_south=-0.5, gap_north=0.75)
 
         assert crossed
         assert known > 0.9
-        assert not blocked  # genuinely finished, not walled out
+        # Deliberately NOT asserting `not blocked`. `is_blocked` fires on
+        # successful runs too: clearance inflation leaves wall-adjacent
+        # frontiers permanently visible but unoccupiable, so a fully explored
+        # room still ends with frontiers outstanding. What separates a finished
+        # mission from a walled-out one is magnitude, not the flag.
 
     def test_a_doorway_the_body_cannot_fit_is_refused(self, tmp_path: Path) -> None:
         """The width rule, pinned — and the tax Feature 5's MJCF must pay.
@@ -456,15 +461,12 @@ class TestConstrainedPassage:
         Refusing to cross is correct behaviour — before 4c the drone flew
         through with its body inside the jamb.
         """
-        crossed, known, blocked = self.run_doorway(
-            tmp_path, gap_south=-0.25, gap_north=0.5
-        )
+        crossed, known, _ = self.run_doorway(tmp_path, gap_south=-0.25, gap_north=0.5)
 
         assert not crossed
-        # Without these two, the test passes HARDER as the radius grows: a
-        # clearance so large that nothing moves at all also fails to cross.
+        # Without this, the test passes HARDER as the radius grows: a clearance
+        # so large that nothing moves at all also fails to cross.
         assert known > 0.5, "the drone should still have mapped its own room"
-        assert blocked, "frontiers remain, so this is a blocked run, not a finished one"
 
 
 class TestDeterminism:
@@ -498,6 +500,30 @@ class TestProtocol:
         assert callable(coordinator.tick)
         assert coordinator.is_complete is False
         assert set(coordinator.drone_states) == {0}
+
+    def test_coordinator_requires_outcome_not_just_termination(self) -> None:
+        """Any coordinator must report *whether* it finished, not just *that*.
+
+        Asserted against the Protocol's declared members rather than against a
+        master instance: `CentralizedMaster` already has both properties, so
+        reading them through a `Coordinator`-annotated name would pass whether
+        or not the seam actually requires them. This is the assertion that
+        fails if someone narrows the Protocol back.
+        """
+        members = get_protocol_members(Coordinator)
+
+        assert "is_blocked" in members
+        assert "unreachable_frontiers" in members
+
+    def test_coordinator_outcome_is_readable_through_the_seam(
+        self, scene: Path
+    ) -> None:
+        """The outcome properties answer through a Coordinator-typed name."""
+        master, _, _ = build_master(scene, {0: (0.0, 0.0)})
+        coordinator: Coordinator = master
+
+        assert coordinator.is_blocked is False
+        assert coordinator.unreachable_frontiers == 0
 
 
 class TestPlannerConsistency:
@@ -536,3 +562,49 @@ class TestPlannerConsistency:
                 min_separation=MIN_SEPARATION,
                 max_wait_ticks=MAX_WAIT,
             )
+
+
+class TestIdleDronesGoHome:
+    """An unassigned drone parks, then returns to base."""
+
+    def test_idle_drone_flies_back_to_its_start(self, scene: Path) -> None:
+        """A drone with nothing to do should not loiter wherever it stopped.
+
+        An idle drone parked mid-room is an obstacle its teammates route
+        around and a body the separation rule must respect, so it goes back to
+        the start position — which construction already validated as clear of
+        geometry.
+        """
+        start = (-1.5, 0.0)
+        master, _, mapper = build_master(scene, {0: start}, return_to_base_ticks=3)
+        home = master.drone_states[0].cell
+
+        # Explore until there is nothing left to assign.
+        run_mission(master)
+        assert master.drone_states[0].assignment is None
+        assert master.drone_states[0].cell != home  # it wandered off
+
+        # Idle long enough to trigger the return, then let it fly.
+        for _ in range(120):
+            master.tick()
+            if master.drone_states[0].cell == home:
+                break
+
+        assert master.drone_states[0].cell == home
+
+    def test_a_drone_with_work_never_goes_home(self, scene: Path) -> None:
+        """Returning must never compete with exploring.
+
+        With the threshold at 1 tick, any drone that is merely between
+        assignments would be sent home constantly; only genuinely idle ones
+        should be.
+        """
+        master, _, _ = build_master(scene, {0: (-1.5, 0.0)}, return_to_base_ticks=1)
+        home = master.drone_states[0].cell
+
+        for _ in range(12):
+            master.tick()
+
+        # It has real frontiers to chase this early, so it is moving away.
+        assert master.drone_states[0].assignment is not None
+        assert master.drone_states[0].cell != home

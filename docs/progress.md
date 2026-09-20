@@ -787,3 +787,278 @@ from a corridor-confined patrol, which is the expected figure when the rooms
 are never entered, and a useful baseline for what frontier exploration should
 beat in Feature 6.
 
+---
+
+## 2026-09-20 — Finding 2 resolved: why large_indoor never terminated (Feature 6)
+
+The handoff's leading hypothesis was that the remaining unknown space is wall
+interior, that the free cells facing it are therefore *permanent* frontiers,
+and that at `r = 1` enough of them stay reachable for the swarm to chase them
+forever. **Measured, and it is not that.** At the plateau every surviving
+frontier is unreachable from every drone:
+
+```
+(213, 36) clearance_blocked=True  reachable_from=[False, False, False]
+(90, 135) clearance_blocked=True  reachable_from=[False, False, False]
+(136,135) clearance_blocked=True  reachable_from=[False, False, False]
+(159,189) clearance_blocked=True  reachable_from=[False, False, False]
+(35, 223) clearance_blocked=True  reachable_from=[False, False, False]
+```
+
+Two separate mechanisms, both confirmed:
+
+**1. The frontier set never settles.** Wall-surface cells collect *both* free
+and occupied evidence at grazing incidence and drift across the 0.4/0.6
+classification bands, so tiny regions keep appearing and vanishing — 5 regions
+at one sample, 10 twenty ticks later. Traced per cell:
+
+```
+(136,135) 0.1041..0.5960  FFFFFF??????   free -> unknown
+(159,188) 0.0067..0.9334  OO?FFFFFFFFF   occupied -> unknown -> free
+```
+
+**2. Assignments were never re-checked against the target.**
+`is_assignment_valid` tested arrival, the wait counter and the next cell, but
+never whether the goal was *still a frontier*. Drones were flying 60-100 step
+journeys with `still_a_frontier=False` on nearly every sample — arriving at
+nothing, re-selecting, repeating. With someone always mid-path,
+`all(assignment is None)` is never true, so `is_complete` could never fire.
+
+This is the third time the same defect shape has appeared in this function: the
+keep-alive test not re-checking what justified the assignment. 4c added the
+clearance re-check; this adds the target re-check.
+
+### What did not work
+
+**`min_frontier_size` (filtering noise regions at source) trades coverage for
+speed and cannot buy the KPI.** Measured on large_indoor:
+
+```
+size=2   97.6% coverage    (KPI met, slow)
+size=4   79.1% coverage
+size=12  87.2% coverage    (fast, plateaus)
+```
+
+Filtering removes real frontiers along with noise. The knob is kept — plumbed
+through `Mapper` and `PlanningSettings`, defaulting to 2, i.e. off — because it
+documents a real phenomenon and is the right lever if a future scene is noisier.
+It is not the fix.
+
+### What worked
+
+**Admissible lower-bound pruning in `NearestFrontier.select`.** Candidates are
+planned in increasing `cost_lower_bound` order and the loop stops once the bound
+exceeds the best score found; no real path can undercut the bound and the
+spreading penalty only adds, so the selected assignment is *identical*. Pure
+cost, no behaviour change — and it is what made the target re-check affordable,
+since dropping stale assignments makes re-selection common. **2500 ticks went
+from 234s-for-400 to 61s**, roughly 25x.
+
+The bound is declared by the planner (`PathPlanner.cost_lower_bound`) rather
+than computed in the strategy. A first attempt computed octile distance inline
+and broke a test whose `StubPlanner` returns costs that violate grid geometry —
+correctly, because the strategy would have been assuming every planner uses
+8-connected octile costs. Letting each planner state its own bound removes the
+assumption; a stub returns 0, which disables pruning and is always legal.
+
+**A no-progress stop.** Even with stale targets dropped, transient reachable
+frontiers keep appearing, so "every drone unassigned" never holds on a large
+scene. `no_progress_ticks` ends the mission when no tick has newly *classified*
+a cell for N ticks, reporting `blocked=True`. It counts classified cells rather
+than visited ones because the mission's product is the map: a tick that resolves
+nothing achieved nothing, whatever the drones did.
+
+This is a heuristic and is labelled one. The principled alternative — teaching
+frontier detection not to emit permanently-unobservable space — needs a
+definition of "unobservable" that does not require ground-truth geometry, which
+is a research question, not a sprint task.
+
+### Result
+
+```
+large_indoor  drones=3  ticks=2264  cov=97.606%  complete=True   58s
+small_indoor  drones=3  ticks= 245  cov=98.440%  complete=True    8s
+small_indoor  drones=1  ticks= 377  cov=98.210%  complete=True    8s
+```
+
+Coverage KPI (>=95%) met on both scenarios. Scaling KPI 377/245 = **1.54x**,
+just over the 1.5x commitment — a thin margin worth watching rather than
+celebrating. The large_indoor acceptance run dropped from 279s to 58s, which is
+what keeps it viable as a PR-gate test.
+
+### One acceptance assertion was wrong and got corrected
+
+"Every room physically entered" fails while every room is **100% mapped**: the
+rangefinder reaches 12 m and a room is ~11 m across, so a drone in a doorway
+resolves the whole room without going in. The assertion was measuring sensor
+range, not exploration. Replaced with per-room mapped fraction (the actual
+requirement, and per-room so one dark room cannot hide behind a 97% global
+figure) plus a weaker traversal check that some doorways are genuinely flown.
+
+### Addendum — drones were flying inside the walls
+
+Found by watching `--view`, not by a test: drones passed very close to walls,
+got stuck, and *vanished* from an overhead view. A drone cannot disappear from
+above unless it is inside a 3 m wall, occluded by it.
+
+Measured on large_indoor before the fix:
+
+```
+drone 0: inside the inflated zone 1252/2264 ticks (55.3%), longest streak 1183
+drone 1:                           359/2264 ticks (15.9%), longest streak  249
+drone 2:                           151/2264 ticks ( 6.7%), longest streak   61
+```
+
+At `resolution` 0.2 a cell at Chebyshev distance 1 from an obstacle puts the
+wall face 0.1 m from the drone centre against a 0.15 m half-extent, so this is
+genuine overlap with wall geometry, for over half the mission.
+
+**Cause: the 4c escape phase was unbounded.** The rule was "from a blocked cell
+you may move to any free cell; from an open cell only to open cells", described
+as *escaping is allowed, loitering is not*. But a path that **starts** in the
+zone and **never leaves** satisfies it completely — the planner was free to
+route along the inside of a wall for the entire journey.
+
+**The test could not catch it.** It asserted that blocked cells form a *prefix*
+of the path, which a path that never leaves the zone satisfies trivially. A
+prefix property says nothing about length.
+
+**Fix: bound the allowance to the start's neighbourhood** — a blocked cell is
+passable only within Chebyshev `r` of the start. Escaping means stepping off
+the spot you are standing on, not licence to travel by wall. The test now
+asserts the bound itself, at r = 1, 2 and 3.
+
+```
+drone 0: 1252 -> 0 ticks in the zone
+drone 1:  359 -> 2   (genuine escapes from a newly discovered wall)
+drone 2:  151 -> 0
+mission: 2264 -> 1498 ticks, coverage unchanged at 97.6%
+```
+
+Exploration got **faster**, because a third of the mission had been spent
+flying through walls rather than mapping.
+
+Two lessons worth keeping. First, **a prefix assertion is not a bound** — it
+constrains shape, not magnitude, and magnitude was the whole property. Second,
+this was invisible to 300 tests and obvious within a minute of watching the
+thing run. Determinism, coverage and separation were all green throughout;
+none of them ask where the drone *is*.
+
+Also corrected here: two assertions treating `is_blocked` as pass/fail. It
+fires on successful runs too — clearance leaves wall-adjacent frontiers
+permanently visible but unoccupiable, so a fully explored room still ends with
+frontiers outstanding. What separates finished from walled-out is magnitude,
+which the handoff already recorded and these assertions had ignored.
+
+### Addendum — exhausted frontiers and return-to-base
+
+Two more things the viewer showed that no test asked about.
+
+**A drone looped between the same two rooms.** Wall-surface cells emit
+frontiers over space no scan can resolve, so a drone flies to one, fails to
+clear it, picks the other, fails, and comes back. The coordinator now remembers
+frontiers a drone **reached** without clearing and stops offering them.
+"Reached" is the right evidence rather than "targeted": arriving is what proves
+a frontier cannot be resolved from close range, and it is the only proof
+available without ground-truth geometry.
+
+**An idle drone loitered wherever it stopped.** It is then an obstacle its
+teammates route around and a body the separation rule must keep clear of.
+After `return_to_base_ticks` unassigned ticks a drone now flies back to its
+start position, which construction already validated as clear of geometry. Any
+drone that picks up a frontier abandons the trip home immediately, so returning
+never competes with exploring.
+
+Expressed in **ticks, not seconds**, despite the request being "60 seconds":
+`mj_step` is never called, so simulated time does not advance, and wall-clock
+time would make a deterministic run irreproducible. Ticks are the only clock
+this system has.
+
+### Combined effect
+
+```
+                        before        after
+large_indoor 3 drones   2264 ticks    1498 ticks   97.6% coverage
+small_indoor 3 drones    245 ticks     175 ticks   98.4%
+scaling KPI             1.54x         4.70x        (221 vs 47 ticks to 95%)
+```
+
+The scaling KPI went from a hair over its 1.5x commitment to comfortably past
+it. That is not a measurement change — it is the wall-hugging fix. A third of
+each mission had been spent flying inside walls, and that waste fell hardest on
+the multi-drone arm, where three drones were each doing it.
+
+Worth recording as a process note: the wall-hugging, the room-looping and the
+loitering were all found by **watching the simulation**, with 300 tests green.
+Determinism, coverage, separation and accuracy were all passing throughout.
+None of them ask where the drone actually *is*.
+
+### Addendum — where the viewer time actually goes
+
+Reported as "really slow" while watching. Two candidates were measured rather
+than assumed, and the obvious one was wrong.
+
+**`probability()` caching: no measurable gain, reverted.** The hypothesis was
+that recomputing `exp` over 62,500 cells ~25 times a tick (once per `plan()`,
+per clearance mask, per frontier pass, per progress check) dominated. A cache
+invalidated by `update_free`/`update_occupied` was implemented and measured:
+**46s against 44s — noise.** It was reverted rather than kept: CLAUDE.md names
+caches specifically as something to stop before adding, and an optimization
+that cannot be measured has not earned its complexity. Ray-casting and map
+integration are the real per-tick cost.
+
+**The viewer's own pause was a third of the wall time.** `_FRAME_DELAY_S = 0.02`
+per rendered tick is 30 seconds of pure sleep across a 1498-tick mission, on top
+of ~46s of compute. On a large scene the tick already takes ~30 ms, which paces
+the animation at a watchable ~30 fps by itself.
+
+Default is now 0, with `--view-delay SECONDS` for small scenes that would
+otherwise finish before you can look at them. **This changes public CLI
+behaviour** (flagged per CLAUDE.md): a `--view` run of `large_indoor` is now
+about 40% shorter in wall time, and identical in output — the delay never
+touched the map.
+
+
+### Addendum — the visit heatmap, and what it shows
+
+Added on the user's suggestion after watching a run: `--visit-heatmaps` writes
+one PNG per drone counting how many ticks it spent in each cell, drawn over the
+occupancy map. Counts are on a **log** ramp because they are heavy-tailed — a
+drone parked at base accrues dozens of visits to one cell while a corridor it
+swept once has a single visit, and a linear ramp renders everything but the
+parking spot identical.
+
+Counted in the CLI, not the coordinator: it is a diagnostic, and `coordination`
+should not carry state only a debug flag reads.
+
+**It immediately showed three things coverage had hidden.** On large_indoor,
+3 drones, 1498 ticks, 97.6% coverage:
+
+```
+Drone 0: 1103 cells visited, 221 revisited, worst cell  61 times
+Drone 1: 1204 cells visited, 198 revisited, worst cell   6 times
+Drone 2:  770 cells visited, 264 revisited, worst cell  16 times
+```
+
+1. **Work is divided badly.** Drone 0's map covers the western half and nothing
+   east; drone 2 never leaves the corridor junction and the one room beside it.
+   The spreading penalty separates *targets*, but nothing gives a drone a
+   region to own, so two drones can spend a mission in the same quadrant.
+2. **Drone 2 retreads 34% of the cells it visits** (264 of 770), concentrated
+   at the corridor crossing — it shuttles in and out rather than progressing.
+3. **Long diagonal traverses across already-explored rooms.** Drone 0's trace
+   is a zigzag spanning the whole west half repeatedly. `NearestFrontier` picks
+   the cheapest *reachable* frontier, and once a neighbourhood is cleared the
+   cheapest remaining one is often across the map — so the drone transits
+   explored space instead of sweeping.
+
+All three are the same underlying gap the user identified from the viewer: the
+strategy plans to *reach* a frontier cell when a 12 m sensor only needs a
+vantage point from which the frontier becomes *observable*. Frontier cells are
+adjacent to unknown space, which is usually against a wall, so "go to the
+frontier" means "cross the map to a wall" by construction.
+
+Next-best-view selection — score candidate *viewpoints* by expected information
+gain within sensor range, rather than scoring the frontier cells themselves —
+is the fix, and it is a `FrontierStrategy` change large enough to want its own
+plan rather than a late-sprint improvisation.

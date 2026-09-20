@@ -13,14 +13,14 @@ to push against.
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Container, Mapping, Sequence
 from dataclasses import replace
 
 import numpy as np
 from numpy.typing import NDArray
 
 from swarm_mapping.coordination.types import Cell, DroneState
-from swarm_mapping.mapping.frontier import FrontierRegion
+from swarm_mapping.mapping.frontier import FrontierRegion, frontier_cells
 from swarm_mapping.mapping.grid import OccupancyGrid
 from swarm_mapping.planning.frontier_strategy import FrontierStrategy
 from swarm_mapping.planning.path_planner import PathPlanner
@@ -52,6 +52,7 @@ def is_assignment_valid(
     free_threshold: float,
     max_wait_ticks: int,
     blocked: NDArray[np.bool_],
+    live_frontiers: Container[Cell],
 ) -> bool:
     """Check whether a drone should keep flying its current assignment.
 
@@ -80,6 +81,7 @@ def is_assignment_valid(
         max_wait_ticks: Consecutive blocked ticks after which the drone gives up
             on this frontier and picks another (the deadlock escape).
         blocked: The planner's clearance mask, indexed [row, col].
+        live_frontiers: Cells that are still frontiers this tick.
 
     Returns:
         True if the assignment should be kept.
@@ -88,6 +90,27 @@ def is_assignment_valid(
         return False
     if state.waited_ticks > max_wait_ticks:
         return False  # deadlock escape — try a different frontier
+    if state.assignment.region.cell not in live_frontiers:
+        # The target stopped being a frontier while the drone was en route, so
+        # there is nothing left to see there. Paths here run 60-100 steps, and
+        # cells on a wall surface cross the 0.4/0.6 classification bands as they
+        # accumulate mixed free and occupied evidence at grazing incidence — so
+        # without this check a drone spends a hundred ticks travelling to a
+        # frontier that evaporated after five, arrives at nothing, and picks up
+        # another one that has since appeared. Measured on large_indoor: the
+        # swarm plateaus at 97.6% coverage by tick 1000 and then burns 3000 more
+        # ticks with `still_a_frontier=False` on almost every sample, never
+        # terminating because some drone is always mid-journey and
+        # `is_complete` needs every drone unassigned at once.
+        _LOGGER.info(
+            "assignment_dropped",
+            extra={
+                "reason": "frontier_gone",
+                "drone_id": state.drone_id,
+                "cell": state.assignment.region.cell,
+            },
+        )
+        return False
     step = next_cell(state)
     if step is None:
         return False  # arrived
@@ -145,13 +168,19 @@ def assign_all(
     """
     prob = grid.probability()
     blocked = planner.clearance_mask(grid)
+    # Frontier *cells*, not regions: a region's representative cell can shift as
+    # the region changes shape, which would drop assignments that are still
+    # perfectly good.
+    live = frozenset(frontier_cells(grid, free_threshold=free_threshold))
     ordered = sorted(states, reverse=True)
 
     claimed: list[FrontierRegion] = []
     keeping: set[int] = set()
     for drone_id in ordered:
         state = states[drone_id]
-        if is_assignment_valid(state, prob, free_threshold, max_wait_ticks, blocked):
+        if is_assignment_valid(
+            state, prob, free_threshold, max_wait_ticks, blocked, live
+        ):
             keeping.add(drone_id)
             assert state.assignment is not None  # narrowed by is_assignment_valid
             claimed.append(state.assignment.region)

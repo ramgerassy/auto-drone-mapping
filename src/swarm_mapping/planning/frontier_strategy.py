@@ -137,9 +137,33 @@ class NearestFrontier:
         best: FrontierAssignment | None = None
         best_key: tuple[int, int, int] | None = None
 
-        for region in frontiers:
-            if region.cell in claimed_cells:
-                continue  # hard exclusion: one drone per frontier
+        # Plan cheapest-lower-bound first so the search can stop early. The
+        # bound comes from the planner (see `PathPlanner.cost_lower_bound`), so
+        # this makes no assumption about its cost model; the spreading penalty
+        # only ever adds, so once the bound exceeds the best score found no
+        # remaining candidate can win. The ordering key
+        # carries (row, col) so the traversal is deterministic, and the break
+        # uses a strict `>` so equal-bound candidates are still compared on the
+        # existing tie-break rather than dropped by arrival order.
+        #
+        # This is pure cost, not behaviour: the selected assignment is
+        # identical, but a re-selecting drone stops running A* against every
+        # frontier on the map. That matters because dropping stale assignments
+        # made re-selection common.
+        ordered = sorted(
+            (
+                self._planner.cost_lower_bound(start, region.cell),
+                region.cell[1],
+                region.cell[0],
+                region,
+            )
+            for region in frontiers
+            if region.cell not in claimed_cells
+        )
+
+        for bound, _, _, region in ordered:
+            if best_key is not None and bound > best_key[0]:
+                break  # every remaining candidate is at least this expensive
             path = self._planner.plan(grid, start, region.cell)
             if path is None:
                 continue  # unreachable through known-free space

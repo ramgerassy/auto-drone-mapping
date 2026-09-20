@@ -22,6 +22,7 @@ from swarm_mapping.mapping.grid import OccupancyGrid
 from swarm_mapping.mapping.types import MapConfig
 from swarm_mapping.planning.path_planner import AStarPlanner
 from swarm_mapping.simulation.engine import SimulationEngine
+from tests.scene_truth import box_geoms, truth_grid
 
 pytestmark = pytest.mark.sprint(2)  # Feature 5 — large indoor scenario
 
@@ -55,47 +56,18 @@ def model() -> mujoco.MjModel:
     return mujoco.MjModel.from_xml_path(str(SCENE))
 
 
-def box_geoms(model: mujoco.MjModel) -> list[tuple[str, float, float, float, float]]:
-    """Every box geom as (name, pos_x, pos_y, half_x, half_y)."""
-    out = []
-    for i in range(model.ngeom):
-        if model.geom_type[i] != mujoco.mjtGeom.mjGEOM_BOX:
-            continue
-        name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, i) or f"geom_{i}"
-        pos, size = model.geom_pos[i], model.geom_size[i]
-        out.append((name, float(pos[0]), float(pos[1]), float(size[0]), float(size[1])))
-    return out
-
-
-def truth_grid(model: mujoco.MjModel) -> OccupancyGrid:
-    """A ground-truth occupancy grid built from the parsed geometry.
-
-    A cell is occupied when its extent overlaps a box geom's — the same
-    conservative rule the mapper lands on when a ray endpoint falls inside a
-    cell, without needing to run a full scan.
-    """
-    grid = OccupancyGrid(
+def scene_truth(model: mujoco.MjModel) -> OccupancyGrid:
+    """Ground truth for this scene at the scenario's grid geometry."""
+    return truth_grid(
+        model,
         MapConfig(
             resolution=RESOLUTION,
             origin_x=ORIGIN,
             origin_y=ORIGIN,
             grid_width=CELLS,
             grid_height=CELLS,
-        )
+        ),
     )
-    grid.log_odds[:] = -2.0  # free
-    half = RESOLUTION / 2
-    for _, px, py, sx, sy in box_geoms(model):
-        c0 = max(0, int(np.floor((px - sx - ORIGIN) / RESOLUTION)))
-        c1 = min(CELLS - 1, int(np.ceil((px + sx - ORIGIN) / RESOLUTION)))
-        r0 = max(0, int(np.floor((py - sy - ORIGIN) / RESOLUTION)))
-        r1 = min(CELLS - 1, int(np.ceil((py + sy - ORIGIN) / RESOLUTION)))
-        for col in range(c0, c1 + 1):
-            for row in range(r0, r1 + 1):
-                cx, cy = grid.grid_to_world(col, row)
-                if abs(cx - px) < sx + half and abs(cy - py) < sy + half:
-                    grid.log_odds[row, col] = 2.0  # occupied
-    return grid
 
 
 class TestSceneLoads:
@@ -156,7 +128,7 @@ class TestNavigability:
         and the mission would report completion having never entered it. That
         is invisible in the MJCF and obvious here.
         """
-        grid = truth_grid(model)
+        grid = scene_truth(model)
         planner = AStarPlanner(clearance_radius=CLEARANCE)
         start = grid.world_to_grid(*SPAWN)
 
@@ -177,7 +149,7 @@ class TestNavigability:
         under `2r + 1` — and both rooms behind it drop off the map while the
         rest of the plan is untouched.
         """
-        grid = truth_grid(model)
+        grid = scene_truth(model)
         planner = AStarPlanner(clearance_radius=CLEARANCE)
         start = grid.world_to_grid(*SPAWN)
 
@@ -204,7 +176,7 @@ class TestNavigability:
         The floor is `2r + 1` cells plus one cell of slop = 4 at r = 1. These
         are 6, so the scene tolerates clearance_radius rising to r = 2.
         """
-        grid = truth_grid(model)
+        grid = scene_truth(model)
         prob = grid.probability()
         planner = AStarPlanner(clearance_radius=CLEARANCE)
         radius = planner._inflation_cells(RESOLUTION)
@@ -233,16 +205,16 @@ class TestConfig:
     def test_config_extents_cover_the_whole_floor(self) -> None:
         """Grid extent, origin and the scene's 50 m floor must agree."""
         config = load_config(CONFIG)
-        map_cfg = config["map"]
+        map_cfg = config.map
 
-        assert map_cfg["grid_width"] * map_cfg["resolution"] == 50.0
-        assert map_cfg["grid_height"] * map_cfg["resolution"] == 50.0
-        assert map_cfg["origin_x"] == ORIGIN
-        assert map_cfg["origin_y"] == ORIGIN
-        assert config["scene"]["path"] == "large_indoor.xml"
+        assert map_cfg.grid_width * map_cfg.resolution == 50.0
+        assert map_cfg.grid_height * map_cfg.resolution == 50.0
+        assert map_cfg.origin_x == ORIGIN
+        assert map_cfg.origin_y == ORIGIN
+        assert config.scene_path == "large_indoor.xml"
 
     def test_config_clearance_matches_what_the_doorways_were_sized_for(self) -> None:
         """The scene's widths are only correct for this clearance value."""
         config = load_config(CONFIG)
 
-        assert config["planning"]["clearance_radius"] == CLEARANCE
+        assert config.planning.clearance_radius == CLEARANCE

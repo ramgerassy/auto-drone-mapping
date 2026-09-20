@@ -17,6 +17,7 @@ from collections.abc import Sequence
 
 import numpy as np
 import pytest
+from numpy.typing import NDArray
 
 from swarm_mapping.mapping.frontier import FrontierRegion
 from swarm_mapping.mapping.grid import OccupancyGrid
@@ -79,6 +80,19 @@ class StubPlanner:
         """Return the canned path for `goal`, or None if unreachable."""
         self.calls.append(goal)
         return self._paths.get(goal)
+
+    def cost_lower_bound(self, start: Cell, goal: Cell) -> int:
+        """Always 0 — canned paths owe nothing to grid geometry.
+
+        A stub's costs are chosen to exercise scoring, not to be reachable
+        distances, so any real bound would prune candidates the test means to
+        compare. Returning 0 disables pruning, which is always legal.
+        """
+        return 0
+
+    def clearance_mask(self, grid: OccupancyGrid) -> NDArray[np.bool_]:
+        """Nothing is clearance-blocked for a stub."""
+        return np.zeros((grid.config.grid_height, grid.config.grid_width), dtype=bool)
 
 
 @pytest.fixture

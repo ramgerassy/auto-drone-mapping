@@ -466,21 +466,38 @@ class TestEscapingTheInflatedZone:
         assert path is not None
         assert path[0] == (5, 2)
 
-    def test_escaping_is_allowed_but_loitering_is_not(self) -> None:
-        """The zone may be left, never re-entered.
+    @pytest.mark.parametrize(("clearance", "radius"), [(1.0, 1), (2.0, 2), (3.0, 3)])
+    def test_the_escape_is_bounded_to_the_start_neighbourhood(
+        self, clearance: float, radius: int
+    ) -> None:
+        """The zone may be used to step off the spot, and no further.
 
-        Otherwise the exemption becomes a licence to route through inflated
-        space for the whole path, which is the bug it was meant to prevent.
+        The first version of this test only asserted that blocked cells form a
+        *prefix* of the path — which a path that never leaves the zone
+        satisfies trivially. It passed while the planner was routing drones
+        along the inside of walls: measured on large_indoor, one drone spent
+        1183 consecutive ticks inside the inflated zone, its body overlapping
+        wall geometry for over half the mission, and was invisible from above
+        because it was inside a 3 m wall.
+
+        So this asserts the bound itself: every blocked cell on the path lies
+        within Chebyshev `radius` of the start.
         """
         grid = self.wall_grid()
-        planner = AStarPlanner(clearance_radius=2.0)
+        planner = AStarPlanner(clearance_radius=clearance)
         blocked = planner.clearance_mask(grid)
+        start = (5, 2)
 
-        path = planner.plan(grid, (5, 2), (8, 9))
+        path = planner.plan(grid, start, (8, 9))
 
         assert path is not None
-        inside = [i for i, (col, row) in enumerate(path) if blocked[row, col]]
-        assert inside == list(range(len(inside)))  # a prefix, then never again
+        strayed = [
+            (col, row)
+            for col, row in path
+            if blocked[row, col]
+            and max(abs(col - start[0]), abs(row - start[1])) >= radius
+        ]
+        assert strayed == [], "path travels through the inflated zone"
 
     def test_start_equals_goal_inside_the_inflated_zone(self) -> None:
         """A drone already standing on its goal has arrived.
