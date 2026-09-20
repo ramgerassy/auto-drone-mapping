@@ -1,12 +1,13 @@
 # Feature 6 — handoff
 
-Branch: `feat/sprint2-integration` (2 commits, pushed)
+Branch: `feat/sprint2-integration`
 Spec: `docs/sprint-2/feature-6-integration.md` (updated with D1–D4 settled)
-Status: **scope items 1–3 done, 4–6 outstanding.** Suite green: 297 passed,
-ruff + mypy clean.
 
-Written 2026-09-20, mid-feature, at the point where a convergence bug in
-`large_indoor` was found and the investigation was stopped.
+> **SUPERSEDED — kept as a record, not as current state.** Written mid-feature
+> when the `large_indoor` convergence bug (Finding 2 below) stopped the work.
+> All six scope items are now complete and Finding 2 is resolved — though *not*
+> by the hypothesis this document proposes, which measurement refuted. See the
+> 2026-09-20 entries in `docs/progress.md` for what actually happened.
 
 ---
 
