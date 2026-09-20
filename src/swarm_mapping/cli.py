@@ -42,7 +42,11 @@ _ASSETS_DIR = Path(__file__).parent / "simulation" / "assets"
 # Live-viewer pacing (used only with --view; has no effect on map output).
 # Drones move one cell per tick — 0.1-0.2 m — so no interpolation is needed to
 # animate smoothly; one sync per tick is the animation.
-_FRAME_DELAY_S = 0.02  # wall-clock pause per frame (~50 fps)
+# Default wall-clock pause per rendered tick. Zero: on a large scene the tick
+# itself takes ~30 ms, which already paces the animation at a watchable ~30 fps,
+# and an extra 0.02 s per tick added 30 s of pure waiting to a 1498-tick
+# mission. Small scenes finish fast enough to want a pause — hence --view-delay.
+_FRAME_DELAY_S = 0.0
 
 # Cells outside this probability band are classified; cells inside are unknown.
 # Matches the free/occupied thresholds the exporter and KPIs use.
@@ -290,6 +294,7 @@ def run_pipeline(
     output_dir: Path,
     view: bool = False,
     drones: int | None = None,
+    view_delay: float = _FRAME_DELAY_S,
 ) -> MissionResult:
     """Run the full exploration pipeline and export the map.
 
@@ -298,6 +303,8 @@ def run_pipeline(
         output_dir: Directory for output files (.npz, .png).
         view: If True, open a live MuJoCo 3D viewer. View-only — the exported
             map is identical whether or not this is enabled.
+        view_delay: Extra seconds to pause per rendered tick. Ignored without
+            `view`, and never affects the map.
         drones: Optional override on the swarm size; takes the first N
             configured start positions.
 
@@ -327,7 +334,7 @@ def run_pipeline(
 
             if viewer is not None and viewer.is_running:
                 viewer.sync()
-                time.sleep(_FRAME_DELAY_S)
+                time.sleep(view_delay)
 
             if master.tick_count % 50 == 0:
                 logger.info(
@@ -362,7 +369,7 @@ def run_pipeline(
             print("Close the viewer window to exit.")
             while viewer.is_running:
                 viewer.sync()
-                time.sleep(_FRAME_DELAY_S)
+                time.sleep(view_delay)
 
         return result
     finally:
@@ -417,6 +424,15 @@ def main() -> None:
         help="Enable verbose logging",
     )
     parser.add_argument(
+        "--view-delay",
+        type=float,
+        default=_FRAME_DELAY_S,
+        metavar="SECONDS",
+        help="Extra pause per rendered tick with --view (default: 0). "
+        "Large scenes are already paced by compute; raise this to slow down "
+        "a small scene that would otherwise finish in seconds",
+    )
+    parser.add_argument(
         "--view",
         action="store_true",
         help="Open a live MuJoCo 3D viewer and watch the swarm explore "
@@ -430,7 +446,13 @@ def main() -> None:
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
 
-    result = run_pipeline(args.config, args.output, view=args.view, drones=args.drones)
+    result = run_pipeline(
+        args.config,
+        args.output,
+        view=args.view,
+        drones=args.drones,
+        view_delay=args.view_delay,
+    )
     _report(result)
 
     # A mission that never converged exits non-zero. `blocked` alone does not

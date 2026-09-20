@@ -993,3 +993,28 @@ loitering were all found by **watching the simulation**, with 300 tests green.
 Determinism, coverage, separation and accuracy were all passing throughout.
 None of them ask where the drone actually *is*.
 
+### Addendum — where the viewer time actually goes
+
+Reported as "really slow" while watching. Two candidates were measured rather
+than assumed, and the obvious one was wrong.
+
+**`probability()` caching: no measurable gain, reverted.** The hypothesis was
+that recomputing `exp` over 62,500 cells ~25 times a tick (once per `plan()`,
+per clearance mask, per frontier pass, per progress check) dominated. A cache
+invalidated by `update_free`/`update_occupied` was implemented and measured:
+**46s against 44s — noise.** It was reverted rather than kept: CLAUDE.md names
+caches specifically as something to stop before adding, and an optimization
+that cannot be measured has not earned its complexity. Ray-casting and map
+integration are the real per-tick cost.
+
+**The viewer's own pause was a third of the wall time.** `_FRAME_DELAY_S = 0.02`
+per rendered tick is 30 seconds of pure sleep across a 1498-tick mission, on top
+of ~46s of compute. On a large scene the tick already takes ~30 ms, which paces
+the animation at a watchable ~30 fps by itself.
+
+Default is now 0, with `--view-delay SECONDS` for small scenes that would
+otherwise finish before you can look at them. **This changes public CLI
+behaviour** (flagged per CLAUDE.md): a `--view` run of `large_indoor` is now
+about 40% shorter in wall time, and identical in output — the delay never
+touched the map.
+
