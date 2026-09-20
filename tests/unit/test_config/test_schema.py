@@ -40,6 +40,8 @@ def valid_config() -> dict[str, Any]:
         "sensor": {
             "num_rays": 72,
             "max_range": 12.0,
+            "elevation_layers": 5,
+            "elevation_max_deg": 20.0,
             "exclusion_radius": 0.30,
         },
         "map": {
@@ -60,6 +62,8 @@ def valid_config() -> dict[str, Any]:
             "min_separation": 0.5,
             "max_wait_ticks": 5,
             "max_ticks": 2000,
+            "assignment": "greedy",
+            "target_tolerance_cells": 0,
             "no_progress_ticks": 200,
             "return_to_base_ticks": 150,
         },

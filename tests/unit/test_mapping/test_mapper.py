@@ -183,3 +183,101 @@ class TestMapper:
         mapper = Mapper(TEST_CONFIG)
         mapper.integrate_scan(_make_scan([]))
         assert np.all(mapper.grid.log_odds == 0.0)
+
+
+class TestElevatedRaysDoNotEraseObstacles:
+    """Sprint 3, Feature 8 — only navigation-plane rays write free space."""
+
+    def grid_config(self) -> MapConfig:
+        """A 1 m-cell grid big enough for a ten-cell ray."""
+        return MapConfig(
+            resolution=1.0,
+            origin_x=0.0,
+            origin_y=0.0,
+            grid_width=12,
+            grid_height=12,
+        )
+
+    def test_an_elevated_ray_does_not_mark_the_ground_beneath_it_free(self) -> None:
+        """The rule this feature turns on.
+
+        An upward ray passing over a short obstacle and striking a wall beyond
+        would, under plain 2D projection, mark the obstacle's own cell free.
+        With one occupied update against four free ones per scan the obstacle
+        loses — so the sweep would erase exactly what it was added to find.
+        """
+        mapper = Mapper(self.grid_config())
+        # A navigation-plane ray finds the obstacle at (3, 0).
+        mapper.integrate_scan(
+            ScanResult(
+                drone_id=0,
+                pose=Pose(
+                    position=np.array([0.5, 0.5, 0.3]),
+                    quaternion=np.array([1.0, 0.0, 0.0, 0.0]),
+                ),
+                observations=[
+                    RayObservation(
+                        origin=np.array([0.5, 0.5, 0.3]),
+                        direction=np.array([1.0, 0.0, 0.0]),
+                        max_range=10.0,
+                        distance=3.0,
+                        hit_point=np.array([3.5, 0.5, 0.3]),
+                        navigation_plane=True,
+                    )
+                ],
+                timestamp=0.0,
+            )
+        )
+        before = mapper.grid.probability()[0, 3]
+
+        # Four elevated rays pass over it and strike a wall at x = 9.5.
+        mapper.integrate_scan(
+            ScanResult(
+                drone_id=0,
+                pose=Pose(
+                    position=np.array([0.5, 0.5, 0.3]),
+                    quaternion=np.array([1.0, 0.0, 0.0, 0.0]),
+                ),
+                observations=[
+                    RayObservation(
+                        origin=np.array([0.5, 0.5, 0.3]),
+                        direction=np.array([0.97, 0.0, 0.26]),
+                        max_range=10.0,
+                        distance=9.0,
+                        hit_point=np.array([9.5, 0.5, 2.6]),
+                        navigation_plane=False,
+                    )
+                ]
+                * 4,
+                timestamp=1.0,
+            )
+        )
+
+        assert mapper.grid.probability()[0, 3] == pytest.approx(before)
+
+    def test_an_elevated_ray_still_records_occupancy_and_height(self) -> None:
+        """It reports what it struck — that is the whole point of the band."""
+        mapper = Mapper(self.grid_config())
+        mapper.integrate_scan(
+            ScanResult(
+                drone_id=0,
+                pose=Pose(
+                    position=np.array([0.5, 0.5, 0.3]),
+                    quaternion=np.array([1.0, 0.0, 0.0, 0.0]),
+                ),
+                observations=[
+                    RayObservation(
+                        origin=np.array([0.5, 0.5, 0.3]),
+                        direction=np.array([0.97, 0.0, 0.26]),
+                        max_range=10.0,
+                        distance=9.0,
+                        hit_point=np.array([9.5, 0.5, 2.6]),
+                        navigation_plane=False,
+                    )
+                ],
+                timestamp=0.0,
+            )
+        )
+
+        assert mapper.grid.probability()[0, 9] > 0.5
+        assert mapper.grid.height[0, 9] == pytest.approx(2.6)

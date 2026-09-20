@@ -19,6 +19,7 @@ from dataclasses import replace
 import numpy as np
 from numpy.typing import NDArray
 
+from swarm_mapping.coordination.allocation import allocate, cost_field
 from swarm_mapping.coordination.types import Cell, DroneState
 from swarm_mapping.mapping.frontier import FrontierRegion, frontier_cells
 from swarm_mapping.mapping.grid import OccupancyGrid
@@ -26,6 +27,36 @@ from swarm_mapping.planning.frontier_strategy import FrontierStrategy
 from swarm_mapping.planning.path_planner import PathPlanner
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _target_survives(
+    target: Cell, live_frontiers: Container[Cell], tolerance: int
+) -> bool:
+    """Whether a frontier still exists at or near `target`.
+
+    An exact-match test is too brittle to be the sole reason a committed
+    assignment is dropped. A region's representative cell moves as the region
+    changes shape, and wall-surface cells cross the 0.4/0.6 classification
+    bands from tick to tick, so the target can leave the frontier set for a
+    tick without anything having really changed. Measured under exact match:
+    150 target changes per drone over 1498 ticks, 92% of them direct swaps,
+    averaging ten ticks of commitment — and every swap throws away the travel
+    already spent getting there.
+
+    Args:
+        target: The cell the drone is flying to.
+        live_frontiers: Frontier cells this tick.
+        tolerance: Chebyshev radius to search. 0 demands an exact match.
+
+    Returns:
+        True if a live frontier lies within `tolerance` of the target.
+    """
+    col, row = target
+    for d_col in range(-tolerance, tolerance + 1):
+        for d_row in range(-tolerance, tolerance + 1):
+            if (col + d_col, row + d_row) in live_frontiers:
+                return True
+    return False
 
 
 def next_cell(state: DroneState) -> Cell | None:
@@ -53,6 +84,7 @@ def is_assignment_valid(
     max_wait_ticks: int,
     blocked: NDArray[np.bool_],
     live_frontiers: Container[Cell],
+    target_tolerance_cells: int = 0,
 ) -> bool:
     """Check whether a drone should keep flying its current assignment.
 
@@ -82,6 +114,8 @@ def is_assignment_valid(
             on this frontier and picks another (the deadlock escape).
         blocked: The planner's clearance mask, indexed [row, col].
         live_frontiers: Cells that are still frontiers this tick.
+        target_tolerance_cells: How far a live frontier may be from the target
+            before the target counts as gone.
 
     Returns:
         True if the assignment should be kept.
@@ -90,7 +124,9 @@ def is_assignment_valid(
         return False
     if state.waited_ticks > max_wait_ticks:
         return False  # deadlock escape — try a different frontier
-    if state.assignment.region.cell not in live_frontiers:
+    if not _target_survives(
+        state.assignment.region.cell, live_frontiers, target_tolerance_cells
+    ):
         # The target stopped being a frontier while the drone was en route, so
         # there is nothing left to see there. Paths here run 60-100 steps, and
         # cells on a wall surface cross the 0.4/0.6 classification bands as they
@@ -138,6 +174,8 @@ def assign_all(
     planner: PathPlanner,
     max_wait_ticks: int,
     free_threshold: float = 0.4,
+    target_tolerance_cells: int = 0,
+    mode: str = "greedy",
 ) -> dict[int, DroneState]:
     """Assign a frontier to every drone that needs one.
 
@@ -159,6 +197,10 @@ def assign_all(
             re-checked against. Must be the one `strategy` plans with, or the
             two disagree about which cells the body may occupy.
         max_wait_ticks: Deadlock escape threshold.
+        target_tolerance_cells: Passed to `is_assignment_valid`.
+        mode: "greedy" serves drones one at a time in descending id order;
+            "global" allocates across the whole swarm at once. See
+            `coordination.allocation`.
         free_threshold: Probability below which a cell is traversable.
 
     Returns:
@@ -179,11 +221,23 @@ def assign_all(
     for drone_id in ordered:
         state = states[drone_id]
         if is_assignment_valid(
-            state, prob, free_threshold, max_wait_ticks, blocked, live
+            state,
+            prob,
+            free_threshold,
+            max_wait_ticks,
+            blocked,
+            live,
+            target_tolerance_cells,
         ):
             keeping.add(drone_id)
             assert state.assignment is not None  # narrowed by is_assignment_valid
             claimed.append(state.assignment.region)
+
+    needy = [drone_id for drone_id in ordered if drone_id not in keeping]
+    if mode == "global" and needy:
+        return _assign_globally(
+            grid, frontiers, states, strategy, planner, keeping, needy, claimed, blocked
+        )
 
     result: dict[int, DroneState] = {}
     for drone_id in ordered:
@@ -195,6 +249,72 @@ def assign_all(
         assignment = strategy.select(grid, frontiers, state.cell, claimed)
         if assignment is not None:
             claimed.append(assignment.region)
+        result[drone_id] = replace(
+            state, assignment=assignment, path_index=0, waited_ticks=0
+        )
+
+    return result
+
+
+def _assign_globally(
+    grid: OccupancyGrid,
+    frontiers: Sequence[FrontierRegion],
+    states: Mapping[int, DroneState],
+    strategy: FrontierStrategy,
+    planner: PathPlanner,
+    keeping: set[int],
+    needy: Sequence[int],
+    claimed: list[FrontierRegion],
+    blocked: NDArray[np.bool_],
+) -> dict[int, DroneState]:
+    """Allocate targets to every unassigned drone at once.
+
+    One Dijkstra flood per needy drone gives its cost to every candidate, then
+    `allocate` pairs drones to regions across the swarm rather than serving
+    them one at a time. The chosen region is handed back to the strategy so the
+    actual route, and any scoring the strategy applies, stay its business —
+    this decides *who goes where*, not *how*.
+
+    Args:
+        grid: The occupancy grid.
+        frontiers: All detected regions.
+        states: Current drone states.
+        strategy: The frontier selection strategy.
+        planner: The planner whose clearance model the flood respects.
+        keeping: Drones holding a still-valid assignment.
+        needy: Drones requiring a target, in descending id order.
+        claimed: Regions already spoken for by `keeping` drones.
+        blocked: The planner's clearance mask.
+
+    Returns:
+        New states for every drone.
+    """
+    taken = {region.cell for region in claimed}
+    candidates = [region for region in frontiers if region.cell not in taken]
+
+    result: dict[int, DroneState] = {drone_id: states[drone_id] for drone_id in keeping}
+
+    if candidates:
+        fields = {
+            drone_id: cost_field(grid, states[drone_id].cell, blocked)
+            for drone_id in needy
+        }
+        chosen = allocate(list(needy), [r.cell for r in candidates], fields)
+        by_cell = {region.cell: region for region in candidates}
+    else:
+        chosen = {}
+        by_cell = {}
+
+    for drone_id in needy:
+        state = states[drone_id]
+        target = chosen.get(drone_id)
+        assignment = None
+        if target is not None:
+            # Ask the strategy for exactly this region, so routing and scoring
+            # stay in one place rather than being duplicated here.
+            assignment = strategy.select(grid, [by_cell[target]], state.cell, claimed)
+            if assignment is not None:
+                claimed.append(assignment.region)
         result[drone_id] = replace(
             state, assignment=assignment, path_index=0, waited_ticks=0
         )

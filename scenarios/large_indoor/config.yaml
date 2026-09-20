@@ -17,13 +17,15 @@ drones:
     - [0.0, 0.0, 1.0]
     - [0.0, -1.2, 1.0]
     - [0.0, 1.2, 1.0]
-  altitude: 1.0
+  altitude: 0.3          # low, so a horizontal ray sees anything taller
 
 sensor:
   # Same Slamtec RPLIDAR A2M8 model as small_indoor: 360-degree 2D scanning
   # LiDAR, 16 m rated. num_rays is that one sensor's angular samples per scan.
   num_rays: 72        # 5-degree spacing
   max_range: 12.0     # metres — operational cap ~25% below the 16 m rating
+  elevation_layers: 5   # 1 = flat sweep, which records no height at all
+  elevation_max_deg: 20.0   # upward only; a downward ray would hit the floor
   exclusion_radius: 0.30  # metres — teammate filter; sized to the body's
                       # corner radius. Matters here: three drones start within
                       # 1.2 m of each other and would otherwise map each other
@@ -66,6 +68,8 @@ coordination:
   min_separation: 0.5
   max_wait_ticks: 5   # blocked ticks before a drone abandons its frontier
   max_ticks: 4000     # safety cap — 250x250 cells and 8 rooms need more ticks
-  no_progress_ticks: 200   # stop once 200 ticks resolve no new cell
+  assignment: global          # A+B, see docs/sprint-3/feature-7-*.md
+  target_tolerance_cells: 3   # A+B
+  no_progress_ticks: 800   # 200 truncated a mission by 26 points; see progress.md
   return_to_base_ticks: 150  # idle this long -> fly home and park
                       # than small_indoor; a blocked mission must still end.

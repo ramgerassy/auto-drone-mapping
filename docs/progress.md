@@ -1062,3 +1062,274 @@ Next-best-view selection — score candidate *viewpoints* by expected informatio
 gain within sensor range, rather than scoring the frontier cells themselves —
 is the fix, and it is a `FrontierStrategy` change large enough to want its own
 plan rather than a late-sprint improvisation.
+
+---
+
+## 2026-09-20 — The map is 2D, not 2.5D
+
+Raised by the user reading `map.png`: an obstacle in one room was missing, and
+they inferred that if the drone only ever sees walls tall enough to cross its
+flight plane, "this is not 2.5D, it's 2D as long as the room is smaller than
+12 m". That inference is correct, and the measurement is worse than the
+inference.
+
+**The height layer holds exactly one value.**
+
+```
+height layer: 3961 cells written, 58539 still -inf
+  distinct height values: [1.]
+```
+
+1.0 m is the flight altitude. `Rangefinder._compute_directions` builds every ray
+with body-frame `z = 0` — a purely horizontal sweep — so every `hit_point[2]`
+equals the drone's own altitude, and `update_occupied(col, row, hit_z)` stamps
+that same number into every occupied cell it ever writes. The per-cell height
+channel cannot record anything but the plane the rays were cast in.
+
+**And obstacles below the flight plane are invisible.** Measured against
+`large_indoor`'s four crates, with the drone at 1.0 m:
+
+```
+geom          z span        ray at z=1.0 hits it?
+crate_ne   0.00 .. 0.80     False   <- the "missing object"
+crate_sw   0.00 .. 0.80     False
+crate_nw   0.00 .. 1.20     True
+crate_se   0.00 .. 1.00     True
+```
+
+The two crates the user could not find are exactly the two shorter than the
+flight altitude. The two taller ones map correctly, appearing as unknown
+interiors ringed by occupied cells.
+
+**This contradicts a stated non-negotiable.** CLAUDE.md commits to "2.5D
+mapping only. 2D occupancy grid + per-cell height" and names it a constraint
+that shapes every decision. What ships is a 2D occupancy grid plus a constant.
+
+The gap is not in `mapping` — `OccupancyGrid.update_occupied` takes and stores a
+height faithfully, and `save_png` shades by it. It is in `perception`: a single
+horizontal ray plane cannot produce varying `hit_z`. Genuine 2.5D needs rays
+spread over elevation as well as azimuth, so `hit_point[2]` varies with what was
+struck. That is a `Rangefinder` change — the `Sensor` seam's shape already
+allows it, since `scan()` returns `RayObservation`s carrying full 3D hit points
+and the mapper already reads `hit_point[2]`.
+
+Two consequences worth stating plainly:
+
+1. **The height channel has never been exercised.** Every test that asserts on
+   it asserts on `-inf` (absent) or on the flight altitude, so it has been
+   green while measuring nothing. The Feature 4b teammate-filter tests are the
+   clearest case: "the height cell stays `-inf`" was a real regression test for
+   a real bug, but it could never have caught a *wrong* height, only a present
+   one.
+2. **Obstacle detection is altitude-dependent in a way nothing documents.** A
+   scenario author placing a 0.8 m crate has placed a decoration, not an
+   obstacle, and nothing in the config or the scene tells them so.
+
+Also settled in the same exchange: the `map.png` the user was reading came from
+the `--assignment global` run (87.4% coverage), not the 97.6% baseline — the
+under-explored wedges they noticed are the global-allocation failure already
+recorded above, not a mapping fault. The 97.6% map is near-uniformly free with
+both visible crates present.
+
+---
+
+## 2026-09-20 — Elevation sweep: the map is 2.5D now (Sprint 3, Feature 8)
+
+Before: the height channel held **one** distinct value, 1.0, the flight
+altitude. After, on `small_indoor`:
+
+```
+occupied cells with a height: 1735
+distinct heights: 163   range 0.30 .. 3.00 m
+```
+
+And on `large_indoor`, every crate is found with its true top:
+
+```
+crate       true top   mapped?   recorded height
+crate_ne       0.8 m      yes           0.80 m   <- previously invisible
+crate_nw       1.2 m      yes           1.20 m
+crate_se       1.0 m      yes           1.00 m
+crate_sw       0.8 m      yes           0.80 m   <- previously invisible
+```
+
+**Two changes, solving different halves.**
+
+*Fly low.* Altitude 1.0 -> 0.3 m. A horizontal ray detects everything taller
+than the altitude **at any range**, which an angled fan cannot: from 1.0 m a
+-10° ray only reaches down to 0.47 m at 3 m, and less further out.
+Height-independent detection is the stronger guarantee, and it is what the low
+plane buys. It also makes the user's original two-phase proposal unnecessary.
+
+*Fan upward.* Elevation bands 0° to 20°, so `hit_point[2]` varies with what was
+struck. **Upward only**: a downward ray strikes the floor and the mapper would
+record a ring of phantom walls around every drone. Flying low is what makes an
+upward-only fan sufficient, so the two halves depend on each other.
+
+### The rule that stops it erasing what it finds
+
+The mapper projects every ray to 2D and marks all cells before the endpoint
+free. An upward ray passing *over* a 0.8 m crate and striking a wall ten metres
+beyond would mark the crate's own cell free — and at one occupied update
+(+0.847) against four free ones (-1.62) per scan, the crate loses. The feature
+would have deleted exactly the obstacles it was added to find.
+
+So: **only navigation-plane rays write free space.** `RayObservation` carries
+`navigation_plane`; elevated rays contribute occupancy and height and nothing
+else. This is not a workaround — an elevated ray genuinely carries no
+information about the ground beneath it, and claiming otherwise was always
+wrong. Verified discriminating: removing the rule fails the test.
+
+### What it cost, and what it changed
+
+Rays per scan go from 72 to 360 (azimuth x bands), and ray-casting was already
+the dominant per-tick cost. Against that, `large_indoor` finished in **1074
+ticks against 1498**, because the drones now see more per scan. Coverage moved
+97.6% -> 95.7%, still over the KPI: the crates are real obstacles now and
+occupy cells that used to be flown over.
+
+**Every previous benchmark baseline is superseded.** The scenarios pose a
+different problem now — four obstacles that must be routed around rather than
+ignored.
+
+### The narrowing worth naming
+
+With the drone unable to climb over anything, height stops being a navigation
+input and becomes map *output* — a property a consumer reads, not something the
+planner consults. This is 2.5D-for-mapping, not 2.5D-for-planning. Worth
+stating because CLAUDE.md's "2.5D mapping only" does not distinguish them, and
+the difference decides whether a height channel is load-bearing or descriptive.
+
+### The tests were green while measuring nothing
+
+Every prior assertion on the height layer checked `-inf` (absent) or the flight
+altitude. Feature 4b's "the teammate's height cell stays `-inf`" was a real
+regression test for a real bug, but it could only ever catch a height that was
+*present*, never one that was *wrong*. A channel with one possible value cannot
+fail an equality check. The new tests are the first that could.
+
+---
+
+## 2026-09-20 — The num_rays anomaly was two bugs and a red herring
+
+"More rays gives worse coverage" turned out not to be a statement about rays.
+Swept across a wide range on `large_indoor`, it is not monotonic at all:
+
+```
+ rays    cov   stopped        gap between rays at 12 m
+   12   1.33%  stalled        31.4 cells
+   24  97.36%  stalled        15.7
+   36  97.34%  stalled        10.5
+   72  95.71%  stalled         5.2
+  144  70.74%  stalled         2.6
+  288  97.35%  stalled         1.3
+```
+
+24 rays beats 144. Six times the rays, a third of the map. Whatever this is, it
+is not ray density — and every run stopped "stalled", which was the clue.
+
+### Bug 1 — `no_progress_ticks: 200` silently truncates missions
+
+```
+ rays  no_progress  ticks     cov   stopped
+   72          200   1074  95.71%  stalled
+   72          800   1674  95.71%  stalled
+   72            0   4000  95.71%      cap     <- more time changes nothing
+  144          200   1197  70.74%  stalled
+  144          800   4000  97.38%      cap     <- +26.6 points, same code
+  144            0   4000  97.38%      cap
+```
+
+At 144 rays the stop ended the mission with a third of the map unfound, and the
+run **reported itself finished**. Raised to 800 across all scenarios.
+
+This is a heuristic I added to make `large_indoor` terminate, and it is worth
+being clear about what it is: a stand-in for "the swarm has nothing left to do"
+that cannot distinguish that from "the swarm is between discoveries". `max_ticks`
+is the real backstop; this only exists to avoid burning it.
+
+### Bug 2 — nothing. 72 rays really does plateau at 95.71%
+
+Unchanged at 200, 800, or with the check disabled for 4000 ticks. That one is a
+genuine property of the run, not a truncation.
+
+### The red herring
+
+Once truncation is excluded, coverage across 24-288 rays sits at 95.7-97.4%.
+That spread is **which trajectory a configuration happens to take**, not how
+densely it scans. Changing ray count changes what is seen first, which changes
+every frontier decision after it. Two runs of the same code over the same map
+diverge because the sensing perturbed the sequence, not because one sensed
+better.
+
+12 rays is the one real geometric failure: 31-cell gaps at range, 1.33%
+coverage, correctly hopeless.
+
+### And it overturned the allocation verdict — again
+
+The allocation benchmark was run before the elevation sweep. Re-run on current
+code:
+
+```
+variant    ticks     cov  revis   bal  union
+baseline    1074  95.71%    295   96%   2343   <- now the WORST coverage
+B           1049  97.36%    229   92%   2573
+A: global   1177  97.37%    423   93%   2682
+A+B         1112  97.36%    253   92%   2704
+```
+
+**A no longer fails the coverage KPI.** It was rejected on 87.4%; it now reaches
+97.37%. Identical at `no_progress_ticks` 200 and 800, so this is not the
+truncation — it is the elevation sweep. Better sensing changed which allocation
+is better, which in hindsight is unsurprising: allocation decides where drones
+go, and what they can see decides what is worth going to.
+
+All three variants now beat the baseline on coverage. The baseline's one
+remaining win is workload balance (96%), and it explores the least ground of
+the four (2343 cells against 2704).
+
+**The lesson is about method, not allocation.** Every benchmark conclusion in
+this project has been conditional on the sensing model, and the sensing model
+had a bug that made a third of the obstacles invisible. Comparing coordination
+strategies on top of that measured the wrong system. Conclusions drawn before
+2026-09-20 should be re-derived, not cited.
+
+### The allocation benchmark, re-measured on the fixed sensor
+
+```
+scenario       variant    ticks     cov  revis   bal  union
+comb_indoor    baseline     389   19.0%    135   81%    992
+comb_indoor    B            372   19.1%    244   85%    831
+comb_indoor    A            389   19.0%    135   81%    992   <- identical to baseline
+comb_indoor    A+B          440   19.1%    320   84%    887
+large_indoor   baseline    1674   95.7%    295   96%   2343   <- worst coverage
+large_indoor   B           1049   97.4%    229   92%   2573
+large_indoor   A           1177   97.4%    423   92%   2682
+large_indoor   A+B         1112   97.4%    253   92%   2704
+small_indoor   baseline     316   98.4%     77   58%    651
+small_indoor   B            223   97.2%      9   36%    389   <- 40% idle
+small_indoor   A            193   98.2%     19   94%    556
+small_indoor   A+B          197   98.3%     18   89%    554
+```
+
+**A+B adopted**, and set in all three scenario configs. It is the only variant
+that beats the baseline on every map and has no bad case: 34% faster on
+`large_indoor` at 97.4% against 95.7%, exploring the most ground of the four,
+and 38% faster on `small_indoor` with a quarter of the revisits.
+
+B alone is fastest on `large_indoor` but leaves drones idle 40% of the time on
+`small_indoor` with a 36% workload split. A alone now reaches 97.4% — it was
+rejected on 87.4%, and that number moved because the *sensor* changed, not the
+allocation.
+
+`comb_indoor` has stopped discriminating: baseline and A produce byte-identical
+runs, and mission length fell from ~1100 ticks to ~390. It was built to expose
+thrashing that the elevation sweep largely removed. It still earns its place as
+a clearance and doorway test; it is no longer an allocation benchmark.
+
+**Three verdicts on the same question, and only the middle one was an error.**
+Revision 1 recommended A+B on a metric confounded by coverage. Revision 2
+rejected everything after that metric was corrected. Revision 3 recommends A+B
+again — not because revision 2 was wrong about the data it had, but because the
+system underneath it changed. Worth separating: a wrong measurement is a
+mistake, a changed system is not.

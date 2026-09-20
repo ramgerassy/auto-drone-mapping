@@ -141,3 +141,52 @@ def save_visit_heatmap(
         rgb[seen] = hot[seen]
 
     Image.fromarray(np.flipud(rgb), mode="RGB").save(str(path))
+
+
+def save_route_png(
+    route: list[tuple[int, int]],
+    grid: OccupancyGrid,
+    path: str | Path,
+) -> None:
+    """Draw one drone's route over the map, ramped light-to-dark by time.
+
+    The visit heatmap shows where a drone spent its ticks; this shows the order
+    it went, which is what distinguishes sweeping a region once from crossing it
+    repeatedly on the way somewhere else. Early route is pale, late route is
+    dark — a single hue light-to-dark, because time here is a magnitude, not a
+    set of categories.
+
+    Args:
+        route: Ordered cells from `DroneTrack.route`.
+        grid: The occupancy grid, drawn underneath for context.
+        path: Destination PNG path.
+    """
+    prob = grid.probability()
+    height, width = prob.shape
+    rgb = np.zeros((height, width, 3), dtype=np.uint8)
+    rgb[...] = (255, 255, 255)
+    rgb[(prob >= 0.4) & (prob <= 0.6)] = (214, 228, 240)
+    rgb[prob > 0.6] = (70, 70, 78)
+
+    if len(route) > 1:
+        # One hue, pale -> saturated. Endpoints are marked separately below,
+        # because on a long route the ramp's two ends are hard to tell apart.
+        for index, (col, row) in enumerate(route):
+            if not (0 <= col < width and 0 <= row < height):
+                continue
+            weight = index / (len(route) - 1)
+            rgb[row, col] = (
+                int(205 - 163 * weight),
+                int(226 - 140 * weight),
+                int(251 - 78 * weight),
+            )
+
+    for cell, colour in ((route[0], (27, 175, 122)), (route[-1], (235, 104, 52))):
+        col, row = cell
+        for d_col in (-1, 0, 1):
+            for d_row in (-1, 0, 1):
+                c, r = col + d_col, row + d_row
+                if 0 <= c < width and 0 <= r < height:
+                    rgb[r, c] = colour
+
+    Image.fromarray(np.flipud(rgb), mode="RGB").save(str(path))

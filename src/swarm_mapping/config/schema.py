@@ -27,6 +27,32 @@ MAX_DRONES = 5
 POSITION_LENGTH = 3
 
 
+_ASSIGNMENT_MODES = ("greedy", "global")
+
+
+def _assignment_mode(section: dict[str, Any]) -> str:
+    """Read and validate `coordination.assignment`.
+
+    Args:
+        section: The `coordination` config section.
+
+    Returns:
+        The assignment mode.
+
+    Raises:
+        ValueError: If the key is missing or names an unknown mode. No default:
+            which allocation is in force is invisible in the output and is
+            exactly what a benchmark is comparing, so it has to be stated.
+    """
+    value = section.get("assignment")
+    if value not in _ASSIGNMENT_MODES:
+        msg = (
+            f"coordination.assignment must be one of {_ASSIGNMENT_MODES}, got {value!r}"
+        )
+        raise ValueError(msg)
+    return str(value)
+
+
 def _section(config: dict[str, Any], name: str) -> dict[str, Any]:
     """Return a required top-level section, or raise naming it."""
     if name not in config:
@@ -146,12 +172,21 @@ class SensorSettings:
     Attributes:
         num_rays: Angular samples per scan for the single modeled sensor.
         max_range: Maximum sensor range in metres.
+        elevation_layers: Elevation bands per scan. 1 is a flat horizontal
+            sweep, which records the flight altitude into every occupied cell
+            and nothing else — the map's height channel only carries
+            information when this is greater than 1.
+        elevation_max_deg: Highest band, degrees above horizontal. Bands span
+            0 to this, upward only: a downward ray strikes the floor and the
+            mapper would record it as an obstacle.
         exclusion_radius: Radius around a teammate's centre within which a hit
             is attributed to that teammate rather than the environment.
     """
 
     num_rays: int
     max_range: float
+    elevation_layers: int
+    elevation_max_deg: float
     exclusion_radius: float
 
 
@@ -234,8 +269,45 @@ class CoordinationSettings:
             `mj_step` is called, so simulated seconds never advance, and
             wall-clock time would make the mission non-reproducible. 0 keeps
             idle drones parked where they stopped.
+        target_tolerance_cells: How far a live frontier may be from the cell a
+            drone is flying to before the target counts as gone. 0 demands an
+            exact match.
+
+            Motivation is measured. A frontier's representative cell drifts as
+            its region changes shape, and wall-surface cells cross the
+            classification bands from tick to tick, so an exact-match test drops
+            targets that have not really vanished: 150 target changes per drone
+            over 1498 ticks, 92% of them straight swaps from one goal to
+            another, averaging ten ticks of commitment. Every swap wastes the
+            travel already spent.
+        assignment: How frontiers are handed out.
+
+            "greedy" serves drones in descending id order, so the highest id
+            gets first pick and drone 0 takes leftovers. "global" allocates
+            across the whole swarm at once. Motivation is measured: under
+            greedy, one drone covered half the map while another never left
+            the corridor junction.
+
+            There is deliberately no "auto" mode. Selecting on **map size** is
+            the obvious idea and the wrong one — a 50 m empty hall has nothing
+            to divide while a 20 m warren has plenty, so size is a proxy for
+            the thing that matters rather than the thing itself. A structural
+            trigger was then tried and measured: global when unclaimed
+            frontiers outnumber the drones needing one, greedy otherwise. It
+            produced results identical to plain global on all three benchmark
+            maps, because frontier counts run 26-48 against 3 drones and the
+            condition is therefore always true. It was removed rather than
+            shipped as a knob that never changes anything.
         no_progress_ticks: Consecutive ticks without a newly classified cell
-            after which the mission stops. Wall-surface cells drift across the
+            after which the mission stops.
+
+            **Set this generously.** It is a heuristic standing in for "the
+            swarm has nothing left to do", and when it fires early it truncates
+            a mission silently — the run reports itself finished. Measured at
+            144 sensor rays on large_indoor: a value of 200 ended the mission at
+            **70.74%** coverage where 800 reached **97.38%**, a 26-point loss
+            from the same code. `max_ticks` is the real backstop; this exists
+            only to avoid burning it. Wall-surface cells drift across the
             classification bands and keep emitting small frontier regions, a
             few of them transiently reachable, so a swarm with nothing left to
             find can hold assignments indefinitely and never satisfy "every
@@ -246,6 +318,8 @@ class CoordinationSettings:
     min_separation: float
     max_wait_ticks: int
     max_ticks: int
+    target_tolerance_cells: int
+    assignment: str
     no_progress_ticks: int
     return_to_base_ticks: int
 
@@ -391,6 +465,12 @@ def parse_config(raw: Any) -> ScenarioConfig:
         sensor=SensorSettings(
             num_rays=_positive_int(sensor_section, "sensor", "num_rays"),
             max_range=_positive(sensor_section, "sensor", "max_range"),
+            elevation_layers=_positive_int(
+                sensor_section, "sensor", "elevation_layers"
+            ),
+            elevation_max_deg=_non_negative(
+                sensor_section, "sensor", "elevation_max_deg"
+            ),
             exclusion_radius=_non_negative(
                 sensor_section, "sensor", "exclusion_radius"
             ),
@@ -416,6 +496,10 @@ def parse_config(raw: Any) -> ScenarioConfig:
                 coordination_section, "coordination", "max_wait_ticks"
             ),
             max_ticks=_positive_int(coordination_section, "coordination", "max_ticks"),
+            target_tolerance_cells=_non_negative_int(
+                coordination_section, "coordination", "target_tolerance_cells"
+            ),
+            assignment=_assignment_mode(coordination_section),
             no_progress_ticks=_non_negative_int(
                 coordination_section, "coordination", "no_progress_ticks"
             ),

@@ -1,0 +1,181 @@
+<!--
+  Comb indoor scenario: 40m x 40m floor plan, 3m walls (open top).
+
+  Coordinate system: the spine's centreline is y = 0; the floor spans
+  x/y = -20 to +20. At resolution 0.2 that is a 200x200 grid (40k cells),
+  deliberately smaller than large_indoor's 250x250 so benchmark runs of
+  several strategies stay affordable.
+
+      +20 +----------------------------------------+
+          |###..###################################|   `.` free, `#` solid;
+          |###..###################################|   one column = 1 m,
+          |###..######..###########################|   one row = 2 m, read
+          |###..######..###########################|   straight off the
+          |###..######..######..##############..###|   truth grid.
+          |###..######..######..##############..###|
+          |###..######..######..######..######..###|
+          |###..######..######..######..######..###|
+          |###..######..######..######..######..###|
+        0 |........................................|   spine, 3.2 m
+          |........................................|
+          |#######..######..######..######..#######|
+          |#######..######..######..######..#######|
+          |#######..######..######..######..#######|
+          |###############..######..######..#######|
+          |###############..######..######..#######|
+          |###############..######..######..#######|
+          |###############..######..######..#######|
+          |###############..##############..#######|
+      -20 |###############..##############..#######|
+          -20      -10       0        10       +20
+
+  Rib mouths, west to east, at 4 m pitch, alternating north and south:
+
+      x      -16   -12    -8    -4     0     4     8    12    16
+      side     N     S     N     S     N     S     N     S     N
+      depth 18.2   5.2  13.2  18.2   9.2  13.2   5.2  18.2   9.2  m
+
+  Nine dead-end ribs open off a central spine, alternating north and south at
+  4 m pitch, at four distinct depths (5.2 / 9.2 / 13.2 / 18.2 m). This is an
+  ADVERSARIAL benchmark scene, built to discriminate between frontier
+  strategies where small_indoor (one open room) and large_indoor (a corridor
+  cross with eight through-reachable rooms) do not:
+
+    * A rib has no through-route. A drone that enters must come back out the
+      way it came, so a strategy that switches target mid-rib pays the trip
+      twice. large_indoor measured one drone retreading 34% of its cells.
+    * Two drones in the same rib is pure waste — a 1.2 m corridor has no
+      second lane and nothing to divide. A strategy that allocates well sends
+      them to different ribs. large_indoor measured one drone covering half
+      the map while another never left the corridor junction.
+    * The four depths make travel cost the deciding factor between otherwise
+      identical candidates, so a strategy that weighs it properly separates
+      from one that does not.
+
+  WHY THE MATERIAL BETWEEN RIBS IS SOLID rather than 0.4 m shells around empty
+  space: a shell would enclose a sealed void, which `tests/scene_truth.py`
+  classifies *free* (no geom covers it) while no drone can ever reach it. That
+  reads as missing coverage rather than as wall, and would corrupt every
+  coverage and map-accuracy figure the benchmark produces. Solid fill is
+  honest: its interior is unobservable exactly the way any wall interior is,
+  which the truth grid already accounts for. The perimeter, which has free
+  space on one side only, keeps the 0.4 m convention of the other scenes.
+
+  BENCHMARK NOTE: free space is 6272 of the 40,000 cells (15.7%; 258.5 m^2 of
+  1600). The rest is solid, and every one of those 6272 cells is reachable from
+  the spawn — the scene contains no sealed pocket. Coverage here must be read
+  against the *reachable free* cells of the truth grid, not against the cell
+  count of the grid: solid interiors are unobservable, so the absolute fraction
+  `cli.coverage_fraction` reports is not comparable with large_indoor's.
+
+  DIMENSIONS ARE NOT ARBITRARY. Feature 4c measured that a gap must clear
+  `2r + 1` cells PLUS one cell of discretization slop: a wall face landing on a
+  cell boundary has its ray hit point attributed to the far cell, so the mapped
+  gap is one cell narrower than the real one. At resolution 0.2 with
+  clearance_radius 0.20 (r = 1) that floor is 4 cells / 0.8 m. Rib mouths here
+  are 6 cells / 1.2 m and the spine is 16 cells / 3.2 m, matching
+  large_indoor's doorways and corridors, so the scene survives
+  clearance_radius rising to r = 2. A mouth measures 5 or 6 free cells on the
+  grid rather than always 6: its faces land exactly on cell boundaries, and
+  which side of the tie a boundary cell falls on is decided by float rounding
+  in the truth grid. That one cell *is* the slop the floor budgets for, which
+  is why the floor is 4 and not 3.
+
+  EVERY WALL FACE LIES ON A 0.2 m LATTICE POINT, which is also a 0.1 m lattice
+  point. A face at a half-cell offset is exactly what turned a 3-cell gap into
+  2 free cells in the 4c measurement. Geometry was generated from exact
+  rational arithmetic (fractions.Fraction) rather than typed, and
+  tests/unit/test_simulation/test_comb_indoor.py re-asserts the lattice
+  invariant — and the rib mouth widths, and every rib tip's reachability —
+  against the parsed model.
+
+  Box geom sizes are half-extents. The perimeter is 0.4 m thick (half-extent
+  0.2).
+
+  Drones are injected programmatically by SimulationEngine —
+  do not define drone bodies here.
+
+  Rendering follows large_indoor.xml: open top (no ceiling geom) so --view
+  looks down into the plan, opaque walls, two directional lights. The camera
+  sits steeper than the other scenes because a comb only reads from above.
+-->
+<mujoco model="comb_indoor">
+  <option timestep="0.01" gravity="0 0 -9.81"/>
+
+  <!-- Default free-camera framing, as in the other scenes: the passive viewer
+       otherwise opens at floor level. -->
+  <statistic center="0 0 1" extent="36"/>
+  <visual>
+    <headlight ambient="0.5 0.5 0.5" diffuse="0.45 0.45 0.45" specular="0 0 0"/>
+    <global azimuth="90" elevation="-75"/>
+  </visual>
+
+  <worldbody>
+    <!-- Directional lights: no positional falloff, so a 40 m floor has no
+         hotspot. Lights never collide — no effect on ray-casts or the map. -->
+    <light name="key" directional="true" pos="0 0 20" dir="0.2 0.3 -1"
+           diffuse="0.55 0.55 0.55" specular="0 0 0"/>
+    <light name="fill" directional="true" pos="12 12 20" dir="-0.5 -0.5 -1"
+           diffuse="0.35 0.35 0.35" specular="0 0 0"/>
+
+    <!-- Floor -->
+    <geom name="floor" type="plane" size="20 20 0.05"
+          rgba="0.75 0.75 0.78 1.0"/>
+
+    <!-- Perimeter (generated; see the header). Straddles the floor edge, so
+         the grid's outermost ring of cells is wall. -->
+    <geom name="wall_north" type="box" pos="0 20 1.5"
+          size="20 0.2 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="wall_south" type="box" pos="0 -20 1.5"
+          size="20 0.2 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="wall_east" type="box" pos="20 0 1.5"
+          size="0.2 20 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="wall_west" type="box" pos="-20 0 1.5"
+          size="0.2 20 1.5" rgba="0.55 0.58 0.65 1.0"/>
+
+    <!-- North fill: the slab between the spine (y = 1.6) and the perimeter
+         (y = 19.8), minus the rib slots. Its south face is the spine's north
+         wall; the gaps in it are the rib mouths. -->
+    <geom name="fill_n_1" type="box" pos="-18.2 10.7 1.5"
+          size="1.6 9.1 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="fill_n_2" type="box" pos="-12 10.7 1.5"
+          size="3.4 9.1 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="fill_n_3" type="box" pos="-4 10.7 1.5"
+          size="3.4 9.1 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="fill_n_4" type="box" pos="4 10.7 1.5"
+          size="3.4 9.1 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="fill_n_5" type="box" pos="12 10.7 1.5"
+          size="3.4 9.1 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="fill_n_6" type="box" pos="18.2 10.7 1.5"
+          size="1.6 9.1 1.5" rgba="0.55 0.58 0.65 1.0"/>
+
+    <!-- North caps: solid beyond a rib's tip. The rib at x = -16 runs the
+         full 18.2 m to the perimeter and needs none. -->
+    <geom name="cap_n_2" type="box" pos="-8 17.3 1.5"
+          size="0.6 2.5 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="cap_n_3" type="box" pos="0 15.3 1.5"
+          size="0.6 4.5 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="cap_n_4" type="box" pos="8 13.3 1.5"
+          size="0.6 6.5 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="cap_n_5" type="box" pos="16 15.3 1.5"
+          size="0.6 4.5 1.5" rgba="0.55 0.58 0.65 1.0"/>
+
+    <!-- South fill: the same slab mirrored about the spine. -->
+    <geom name="fill_s_1" type="box" pos="-16.2 -10.7 1.5"
+          size="3.6 9.1 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="fill_s_2" type="box" pos="-8 -10.7 1.5"
+          size="3.4 9.1 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="fill_s_3" type="box" pos="0 -10.7 1.5"
+          size="3.4 9.1 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="fill_s_4" type="box" pos="8 -10.7 1.5"
+          size="3.4 9.1 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="fill_s_5" type="box" pos="16.2 -10.7 1.5"
+          size="3.6 9.1 1.5" rgba="0.55 0.58 0.65 1.0"/>
+
+    <!-- South caps. The ribs at x = -4 and x = 12 run the full depth. -->
+    <geom name="cap_s_1" type="box" pos="-12 -13.3 1.5"
+          size="0.6 6.5 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="cap_s_3" type="box" pos="4 -17.3 1.5"
+          size="0.6 2.5 1.5" rgba="0.55 0.58 0.65 1.0"/>
+  </worldbody>
+</mujoco>

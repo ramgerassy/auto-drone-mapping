@@ -90,6 +90,8 @@ class CentralizedMaster:
         max_wait_ticks: int,
         no_progress_ticks: int = 0,
         return_to_base_ticks: int = 0,
+        assignment_mode: str = "greedy",
+        target_tolerance_cells: int = 0,
     ) -> None:
         self._engine = engine
         self._sensor = sensor
@@ -122,6 +124,8 @@ class CentralizedMaster:
         # resolve. See `_assign`.
         self._exhausted: set[Cell] = set()
         self._return_ticks = return_to_base_ticks
+        self._assignment_mode = assignment_mode
+        self._target_tolerance = target_tolerance_cells
         self._idle_ticks: dict[int, int] = {}
         self._going_home: dict[int, list[Cell]] = {}
 
@@ -336,6 +340,8 @@ class CentralizedMaster:
             self._strategy,
             self._planner,
             self._max_wait_ticks,
+            target_tolerance_cells=self._target_tolerance,
+            mode=self._assignment_mode,
         )
         # Nothing assignable to anyone means no drone can make progress. The
         # frontier count is what separates the two reasons for that, and it is

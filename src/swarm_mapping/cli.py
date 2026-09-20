@@ -16,7 +16,7 @@ import argparse
 import logging
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -28,6 +28,7 @@ from swarm_mapping.coordination.master import CentralizedMaster
 from swarm_mapping.mapping.export import (
     save_npz,
     save_png,
+    save_route_png,
     save_visit_heatmap,
 )
 from swarm_mapping.mapping.grid import OccupancyGrid
@@ -37,6 +38,7 @@ from swarm_mapping.perception.rangefinder import Rangefinder
 from swarm_mapping.planning.frontier_strategy import NearestFrontier
 from swarm_mapping.planning.path_planner import AStarPlanner
 from swarm_mapping.simulation.engine import SimulationEngine
+from swarm_mapping.visualization.path_log import PathLog, save_path_log
 from swarm_mapping.visualization.renderer import LiveViewer
 
 logger = logging.getLogger(__name__)
@@ -229,6 +231,8 @@ def build_mission(config: ScenarioConfig, drones: int | None = None) -> Mission:
         engine,
         num_rays=config.sensor.num_rays,
         max_range=config.sensor.max_range,
+        elevation_layers=config.sensor.elevation_layers,
+        elevation_max_deg=config.sensor.elevation_max_deg,
         exclusion_radius=config.sensor.exclusion_radius,
     )
 
@@ -265,6 +269,8 @@ def build_mission(config: ScenarioConfig, drones: int | None = None) -> Mission:
         max_wait_ticks=config.coordination.max_wait_ticks,
         no_progress_ticks=config.coordination.no_progress_ticks,
         return_to_base_ticks=config.coordination.return_to_base_ticks,
+        assignment_mode=config.coordination.assignment,
+        target_tolerance_cells=config.coordination.target_tolerance_cells,
     )
 
     return Mission(engine=engine, mapper=mapper, master=master, config=config)
@@ -301,6 +307,8 @@ def run_pipeline(
     drones: int | None = None,
     view_delay: float = _FRAME_DELAY_S,
     visit_heatmaps: bool = False,
+    assignment: str | None = None,
+    target_tolerance: int | None = None,
 ) -> MissionResult:
     """Run the full exploration pipeline and export the map.
 
@@ -311,6 +319,9 @@ def run_pipeline(
             map is identical whether or not this is enabled.
         view_delay: Extra seconds to pause per rendered tick. Ignored without
             `view`, and never affects the map.
+        assignment: Overrides `coordination.assignment` when given, so the
+            allocation variants can be compared on one config.
+        target_tolerance: Overrides `coordination.target_tolerance_cells`.
         visit_heatmaps: If True, also write one visit-count PNG per drone.
             Diagnostic only — recording where each drone spent its ticks is
             how repeated retreading of the same cells becomes visible, which a
@@ -326,6 +337,19 @@ def run_pipeline(
             out of range.
     """
     config = load_config(config_path)
+    if assignment is not None or target_tolerance is not None:
+        config = replace(
+            config,
+            coordination=replace(
+                config.coordination,
+                assignment=assignment or config.coordination.assignment,
+                target_tolerance_cells=(
+                    config.coordination.target_tolerance_cells
+                    if target_tolerance is None
+                    else target_tolerance
+                ),
+            ),
+        )
     mission = build_mission(config, drones)
     master = mission.master
     max_ticks = config.coordination.max_ticks
@@ -337,9 +361,18 @@ def run_pipeline(
     )
 
     viewer = _open_viewer(mission) if view else None
+    if viewer is not None:
+        # Paint the starting frame before any work happens. The passive viewer
+        # only composites the scene on `sync()`, and the loop below does not
+        # reach its first one until a whole tick has run — with global
+        # allocation that tick floods a cost field per drone, so the window can
+        # sit blank long enough to look like it never opened.
+        viewer.sync()
+        print("Viewer open — close the window to stop early.", flush=True)
 
     # Counted here rather than in the coordinator: this is a diagnostic, and
     # `coordination` should not carry state that only a debug flag reads.
+    path_log = PathLog() if visit_heatmaps else None
     visits: dict[int, NDArray[np.int64]] = {}
     if visit_heatmaps:
         visits = {
@@ -356,6 +389,8 @@ def run_pipeline(
             for drone_id, counts in visits.items():
                 col, row = master.drone_states[drone_id].cell
                 counts[row, col] += 1
+            if path_log is not None:
+                path_log.record(master.drone_states)
 
             if viewer is not None and viewer.is_running:
                 viewer.sync()
@@ -375,9 +410,31 @@ def run_pipeline(
         save_npz(mission.mapper.grid, npz_path)
         save_png(mission.mapper.grid, png_path, max_height=config.map.max_height)
 
+        if path_log is not None:
+            save_path_log(path_log, output_dir / "paths.json")
+            print(
+                f"Division of labour: "
+                f"{path_log.exclusive_fraction():.1%} of visited cells "
+                f"reached by exactly one drone "
+                f"({len(path_log.shared_cells())} shared)"
+            )
+
         for drone_id, counts in sorted(visits.items()):
             heatmap_path = output_dir / f"visits_drone_{drone_id}.png"
             save_visit_heatmap(counts, mission.mapper.grid, heatmap_path)
+            if path_log is not None:
+                route = path_log.tracks[drone_id].route()
+                save_route_png(
+                    route,
+                    mission.mapper.grid,
+                    output_dir / f"route_drone_{drone_id}.png",
+                )
+                stats = path_log.summary()[drone_id]
+                print(
+                    f"  route {len(route)} steps, "
+                    f"{stats['revisited_cells']} cells revisited, "
+                    f"longest revisit gap {stats['longest_gap']} ticks"
+                )
             print(
                 f"Drone {drone_id}: {int(np.sum(counts > 0))} cells visited, "
                 f"{int(np.sum(counts > 1))} revisited, "
@@ -458,6 +515,18 @@ def main() -> None:
         help="Enable verbose logging",
     )
     parser.add_argument(
+        "--assignment",
+        choices=("greedy", "global"),
+        help="Override coordination.assignment for this run, so the variants "
+        "can be compared without editing the scenario config",
+    )
+    parser.add_argument(
+        "--target-tolerance",
+        type=int,
+        metavar="CELLS",
+        help="Override coordination.target_tolerance_cells for this run",
+    )
+    parser.add_argument(
         "--visit-heatmaps",
         action="store_true",
         help="Write one visit-count PNG per drone alongside the map. "
@@ -494,6 +563,8 @@ def main() -> None:
         drones=args.drones,
         view_delay=args.view_delay,
         visit_heatmaps=args.visit_heatmaps,
+        assignment=args.assignment,
+        target_tolerance=args.target_tolerance,
     )
     _report(result)
 

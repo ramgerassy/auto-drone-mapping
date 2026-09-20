@@ -18,7 +18,7 @@ drones:
     - [0.0, 0.0, 1.0]
     - [0.0, -1.2, 1.0]
     - [0.0, 1.2, 1.0]
-  altitude: 1.0       # flight height in metres above the floor (floor at z=0)
+  altitude: 0.3          # low, so a horizontal ray sees anything taller
 
 sensor:
   # Models one Slamtec RPLIDAR A2M8: a 360-degree 2D scanning LiDAR rated to
@@ -29,6 +29,8 @@ sensor:
   # modeled; sensor mass, motor power draw, and spin dynamics are out of scope.
   num_rays: 72        # 5-degree spacing around the horizontal plane
   max_range: 12.0     # meters — operational cap ~25% below the 16 m rating, so
+  elevation_layers: 5   # 1 = flat sweep, which records no height at all
+  elevation_max_deg: 20.0   # upward only; a downward ray would hit the floor
                       # returns stay out of the unreliable near-max zone
   exclusion_radius: 0.30  # metres — hits inside this radius of a teammate's
                       # centre are that teammate, not the environment. Sized to
@@ -57,5 +59,7 @@ coordination:
   min_separation: 0.5
   max_wait_ticks: 5   # blocked ticks before a drone abandons its frontier
   max_ticks: 2000     # safety cap — a blocked mission must terminate
-  no_progress_ticks: 200   # stop once 200 ticks resolve no new cell
+  assignment: global          # A+B, see docs/sprint-3/feature-7-*.md
+  target_tolerance_cells: 3   # A+B
+  no_progress_ticks: 800   # 200 truncated a mission by 26 points; see progress.md
   return_to_base_ticks: 150  # idle this long -> fly home and park
