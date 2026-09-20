@@ -1,40 +1,42 @@
-# Large indoor scenario — 50m x 50m floor plan, corridor cross with 8 rooms.
+# Loop indoor scenario — 50m x 50m floor plan, ring corridor with 12 rooms.
 #
-# Sprint 2: the environment that makes coordination matter. Three drones
-# explore it with frontier-based assignment; the acceptance suite checks that
-# every one of the eight rooms is entered, not merely that the corridors are
-# mapped.
+# The control for large_indoor. That scene is a corridor cross with a single
+# junction, and its measured long-gap revisits may be forced by the floor plan
+# rather than chosen by the frontier strategy. This one has loop connectivity —
+# two genuinely distinct routes between any two regions, no cut cell — so if
+# the revisits collapse here the chokepoint was the cause, and if they persist
+# the strategy is picking targets badly. See the header of loop_indoor.xml.
+#
+# Every value below matches scenarios/large_indoor/config.yaml unless the
+# geometry demands otherwise; that is the point of the comparison.
 
 scene:
   # Path relative to src/swarm_mapping/simulation/assets/
-  path: large_indoor.xml
+  path: loop_indoor.xml
 
 drones:
-  # The corridor crossing — the one region with clear line of sight down both
-  # corridors and clear of every geom. Spread along y, inside the corridor's
-  # interior width (y in [-1.6, 1.6]). Drone ids are this list's indices.
+  # Spread around the ring corridor, one at each of three of its four leg
+  # midpoints, in the mouth of a cross-corridor. Unlike large_indoor there is
+  # no single junction to launch from — starting them together would waste the
+  # property the scene exists to test. Ring legs run between |coord| 12.8 and
+  # 16.0, so 14.4 is the centreline. Drone ids are this list's indices.
   start_positions:
-    - [0.0, 0.0, 1.0]
-    - [0.0, -1.2, 1.0]
-    - [0.0, 1.2, 1.0]
-    # Two more along the east-west arm, so the scaling KPI can be measured to
-    # five drones. Same corridor cross, 1.2 m apart — six cells, well clear of
-    # the 2.5-cell separation floor.
-    - [-1.2, 0.0, 1.0]
-    - [1.2, 0.0, 1.0]
+    - [0.0, 14.4, 1.0]
+    - [14.4, 0.0, 1.0]
+    - [-14.4, 0.0, 1.0]
   altitude: 0.3          # low, so a horizontal ray sees anything taller
 
 sensor:
-  # Same Slamtec RPLIDAR A2M8 model as small_indoor: 360-degree 2D scanning
+  # Same Slamtec RPLIDAR A2M8 model as large_indoor: 360-degree 2D scanning
   # LiDAR, 16 m rated. num_rays is that one sensor's angular samples per scan.
   num_rays: 72        # 5-degree spacing
   max_range: 12.0     # metres — operational cap ~25% below the 16 m rating
   elevation_layers: 5   # 1 = flat sweep, which records no height at all
   elevation_max_deg: 20.0   # upward only; a downward ray would hit the floor
   exclusion_radius: 0.30  # metres — teammate filter; sized to the body's
-                      # corner radius. Matters here: three drones start within
-                      # 1.2 m of each other and would otherwise map each other
-                      # as walls across the corridor.
+                      # corner radius. Less critical here than in large_indoor
+                      # (the drones start 20 m apart) but they meet in the
+                      # corridor soon enough.
 
 map:
   # resolution 0.2, NOT small_indoor's 0.1 — see docs/sprint-2/feature-5-*.md.
@@ -44,8 +46,7 @@ map:
   # budget CLAUDE.md sets for the suite.
   #
   # Every wall face in the MJCF lies on a 0.2 m lattice point, which is also a
-  # 0.1 m lattice point — so dropping to 0.1 needs no change to the geometry if
-  # Feature 6's acceptance run shows the accuracy margin is thin.
+  # 0.1 m lattice point — so dropping to 0.1 needs no change to the geometry.
   resolution: 0.2     # metres per cell
   origin_x: -25.0     # grid covers -25 to +25 in x
   origin_y: -25.0
@@ -59,9 +60,10 @@ planning:
   # cells plus one cell of discretization slop = 0.8 m. Every doorway in the
   # scene is 1.2 m, so the scene survives this value rising to r = 2.
   clearance_radius: 0.20
-  # Eight rooms off a corridor cross is exactly the layout where two drones
-  # will otherwise chase the same doorway. The penalty pushes them apart at
-  # selection time; the radius is roughly one room's width.
+  # Twelve rooms off a ring is exactly the layout where two drones will
+  # otherwise chase the same doorway. The penalty pushes them apart at
+  # selection time; the radius is roughly one room's width. Held at
+  # large_indoor's values so the two scenes differ only in their floor plan.
   spread_radius: 6.0
   spread_penalty: 40
   min_frontier_size: 2    # 2 = no filtering; raising it trades coverage for speed
@@ -72,9 +74,8 @@ coordination:
   # is 2.5 cells, comfortably above the one-cell minimum.
   min_separation: 0.5
   max_wait_ticks: 5   # blocked ticks before a drone abandons its frontier
-  max_ticks: 4000     # safety cap — 250x250 cells and 8 rooms need more ticks
+  max_ticks: 4000     # safety cap — 250x250 cells and 12 rooms need more ticks
   assignment: global          # A+B, see docs/sprint-3/feature-7-*.md
   target_tolerance_cells: 3   # A+B
   no_progress_ticks: 800   # 200 truncated a mission by 26 points; see progress.md
   return_to_base_ticks: 150  # idle this long -> fly home and park
-                      # than small_indoor; a blocked mission must still end.

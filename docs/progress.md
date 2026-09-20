@@ -1333,3 +1333,63 @@ rejected everything after that metric was corrected. Revision 3 recommends A+B
 again — not because revision 2 was wrong about the data it had, but because the
 system underneath it changed. Worth separating: a wrong measurement is a
 mistake, a changed system is not.
+
+---
+
+## 2026-09-20 — Scaling KPI, and splitting one number into two causes
+
+`large_indoor` showed drones leaving a region and returning 600-1000 ticks
+later, which had been loosely called "wasted travel". Sweeping drone count and
+classifying each long-gap revisit by *where* it happened shows it was never one
+phenomenon.
+
+```
+drones  ticks  t@95%   speedup   corridor rev  room rev   balance
+     1   3414   2371        —              89       225     100%
+     2   1664   1311     1.81x             74        73      96%
+     3   1112    811     2.92x             47        49      92%
+     4   1123    625     3.79x             65        54      87%
+     5    894    517     4.59x            103       134      79%
+```
+
+### The scaling KPI passes
+
+4.59x from one drone to five, against CLAUDE.md's >=2x commitment, with
+per-drone efficiency between 0.90 and 0.97 throughout — near-linear. 1->3 is
+2.92x against the >=1.5x figure. This is the first time the KPI has been
+measured beyond three drones; `large_indoor`'s config only defined three start
+positions, and `build_mission` refuses to invent more (correctly — a start
+position has to be collision-free, in bounds and clear of its neighbours). Two
+were added on the east-west corridor arm.
+
+### Two causes, pulling opposite ways
+
+**Room revisits invert with drone count**: 225 at one drone, 49 at three. If
+backtracking were contention it would rise, not fall. A single drone has nobody
+to contend with, so those 225 returns are the *strategy* sending it back across
+the map — `NearestFrontier` picks the cheapest reachable frontier, and once a
+neighbourhood is cleared the cheapest remaining one is often somewhere it has
+already been.
+
+**Corridor revisits rise again past three drones**: 47 at three, 103 at five,
+with balance decaying 100% -> 79%. `large_indoor` is a corridor *cross* — one
+junction, four quadrants — so every inter-quadrant trip crosses the same cells.
+That is the topology's cost, not a strategy failure, and it is what contention
+looks like when it arrives.
+
+Three drones happens to sit at the crossover for this map. Note that
+ticks-to-completion *worsens* from 3 to 4 drones (1112 -> 1123) while
+time-to-95% keeps improving: the tail is contention, not exploration.
+
+### Why this matters for what to fix
+
+Neither allocation change (global assignment, target tolerance) moved the
+long-gap numbers much, and now it is clear why: both change *who goes where*,
+and the dominant cause at low drone counts is *what is worth going to*. That is
+`FrontierStrategy`'s job, and it is where Feature 7 aimed before failing on
+cost.
+
+It also means **the single "revisited cells" figure used in every benchmark so
+far conflated a topology cost with a strategy defect**, and they move in
+opposite directions. Reporting them separately is not a refinement; without it
+the aggregate can stay flat while both halves change.
