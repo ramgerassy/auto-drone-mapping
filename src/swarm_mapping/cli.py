@@ -16,7 +16,7 @@ import argparse
 import logging
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -303,6 +303,8 @@ def run_pipeline(
     drones: int | None = None,
     view_delay: float = _FRAME_DELAY_S,
     visit_heatmaps: bool = False,
+    assignment: str | None = None,
+    target_tolerance: int | None = None,
 ) -> MissionResult:
     """Run the full exploration pipeline and export the map.
 
@@ -313,6 +315,9 @@ def run_pipeline(
             map is identical whether or not this is enabled.
         view_delay: Extra seconds to pause per rendered tick. Ignored without
             `view`, and never affects the map.
+        assignment: Overrides `coordination.assignment` when given, so the
+            allocation variants can be compared on one config.
+        target_tolerance: Overrides `coordination.target_tolerance_cells`.
         visit_heatmaps: If True, also write one visit-count PNG per drone.
             Diagnostic only — recording where each drone spent its ticks is
             how repeated retreading of the same cells becomes visible, which a
@@ -328,6 +333,19 @@ def run_pipeline(
             out of range.
     """
     config = load_config(config_path)
+    if assignment is not None or target_tolerance is not None:
+        config = replace(
+            config,
+            coordination=replace(
+                config.coordination,
+                assignment=assignment or config.coordination.assignment,
+                target_tolerance_cells=(
+                    config.coordination.target_tolerance_cells
+                    if target_tolerance is None
+                    else target_tolerance
+                ),
+            ),
+        )
     mission = build_mission(config, drones)
     master = mission.master
     max_ticks = config.coordination.max_ticks
@@ -460,6 +478,18 @@ def main() -> None:
         help="Enable verbose logging",
     )
     parser.add_argument(
+        "--assignment",
+        choices=("greedy", "global"),
+        help="Override coordination.assignment for this run, so the variants "
+        "can be compared without editing the scenario config",
+    )
+    parser.add_argument(
+        "--target-tolerance",
+        type=int,
+        metavar="CELLS",
+        help="Override coordination.target_tolerance_cells for this run",
+    )
+    parser.add_argument(
         "--visit-heatmaps",
         action="store_true",
         help="Write one visit-count PNG per drone alongside the map. "
@@ -496,6 +526,8 @@ def main() -> None:
         drones=args.drones,
         view_delay=args.view_delay,
         visit_heatmaps=args.visit_heatmaps,
+        assignment=args.assignment,
+        target_tolerance=args.target_tolerance,
     )
     _report(result)
 

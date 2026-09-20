@@ -271,12 +271,24 @@ class CoordinationSettings:
             over 1498 ticks, 92% of them straight swaps from one goal to
             another, averaging ten ticks of commitment. Every swap wastes the
             travel already spent.
-        assignment: How frontiers are handed out — "greedy" (each drone in
-            descending id order takes the best that is left, so the highest id
-            gets first pick and drone 0 takes leftovers) or "global" (one
-            allocation chosen to minimise total travel across the whole swarm).
-            Motivation is measured: under greedy, one drone covered half the
-            map while another never left the corridor junction.
+        assignment: How frontiers are handed out.
+
+            "greedy" serves drones in descending id order, so the highest id
+            gets first pick and drone 0 takes leftovers. "global" allocates
+            across the whole swarm at once. Motivation is measured: under
+            greedy, one drone covered half the map while another never left
+            the corridor junction.
+
+            There is deliberately no "auto" mode. Selecting on **map size** is
+            the obvious idea and the wrong one — a 50 m empty hall has nothing
+            to divide while a 20 m warren has plenty, so size is a proxy for
+            the thing that matters rather than the thing itself. A structural
+            trigger was then tried and measured: global when unclaimed
+            frontiers outnumber the drones needing one, greedy otherwise. It
+            produced results identical to plain global on all three benchmark
+            maps, because frontier counts run 26-48 against 3 drones and the
+            condition is therefore always true. It was removed rather than
+            shipped as a knob that never changes anything.
         no_progress_ticks: Consecutive ticks without a newly classified cell
             after which the mission stops. Wall-surface cells drift across the
             classification bands and keep emitting small frontier regions, a

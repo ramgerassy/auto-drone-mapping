@@ -12,7 +12,7 @@
     "idle": 0.006,
     "swaps": 128.7,
     "spread": 0.744,
-    "seconds": 8.5,
+    "seconds": 8.9,
     "label": "baseline"
   },
   {
@@ -28,7 +28,7 @@
     "idle": 0.001,
     "swaps": 59.0,
     "spread": 0.751,
-    "seconds": 8.8,
+    "seconds": 9.3,
     "label": "B: tolerance"
   },
   {
@@ -44,7 +44,7 @@
     "idle": 0.004,
     "swaps": 119.7,
     "spread": 0.734,
-    "seconds": 12.6,
+    "seconds": 13.2,
     "label": "A: global"
   },
   {
@@ -60,8 +60,24 @@
     "idle": 0.001,
     "swaps": 50.0,
     "spread": 0.714,
-    "seconds": 10.1,
+    "seconds": 10.5,
     "label": "A+B"
+  },
+  {
+    "scenario": "comb_indoor",
+    "variant": "auto",
+    "tolerance": 3,
+    "drones": 3,
+    "ticks": 1104,
+    "capped": false,
+    "coverage": 0.1878,
+    "revisited": 616,
+    "worst_cell": 11,
+    "idle": 0.001,
+    "swaps": 50.0,
+    "spread": 0.714,
+    "seconds": 10.2,
+    "label": "auto+B"
   },
   {
     "scenario": "large_indoor",
@@ -76,7 +92,7 @@
     "idle": 0.029,
     "swaps": 157.0,
     "spread": 0.946,
-    "seconds": 43.8,
+    "seconds": 42.7,
     "label": "baseline"
   },
   {
@@ -92,7 +108,7 @@
     "idle": 0.0,
     "swaps": 61.7,
     "spread": 0.928,
-    "seconds": 54.0,
+    "seconds": 54.4,
     "label": "B: tolerance"
   },
   {
@@ -108,7 +124,7 @@
     "idle": 0.0,
     "swaps": 117.3,
     "spread": 0.982,
-    "seconds": 64.7,
+    "seconds": 65.3,
     "label": "A: global"
   },
   {
@@ -124,8 +140,24 @@
     "idle": 0.0,
     "swaps": 77.3,
     "spread": 0.911,
-    "seconds": 56.0,
+    "seconds": 57.1,
     "label": "A+B"
+  },
+  {
+    "scenario": "large_indoor",
+    "variant": "auto",
+    "tolerance": 3,
+    "drones": 3,
+    "ticks": 1445,
+    "capped": false,
+    "coverage": 0.9758,
+    "revisited": 753,
+    "worst_cell": 7,
+    "idle": 0.0,
+    "swaps": 77.3,
+    "spread": 0.911,
+    "seconds": 58.0,
+    "label": "auto+B"
   },
   {
     "scenario": "small_indoor",
@@ -140,7 +172,7 @@
     "idle": 0.05,
     "swaps": 25.0,
     "spread": 1.0,
-    "seconds": 5.5,
+    "seconds": 5.9,
     "label": "baseline"
   },
   {
@@ -156,7 +188,7 @@
     "idle": 0.155,
     "swaps": 21.0,
     "spread": 1.0,
-    "seconds": 7.5,
+    "seconds": 7.8,
     "label": "B: tolerance"
   },
   {
@@ -172,7 +204,7 @@
     "idle": 0.035,
     "swaps": 28.3,
     "spread": 0.919,
-    "seconds": 20.3,
+    "seconds": 20.8,
     "label": "A: global"
   },
   {
@@ -188,7 +220,23 @@
     "idle": 0.067,
     "swaps": 20.0,
     "spread": 0.998,
-    "seconds": 20.8,
+    "seconds": 21.1,
     "label": "A+B"
+  },
+  {
+    "scenario": "small_indoor",
+    "variant": "auto",
+    "tolerance": 3,
+    "drones": 3,
+    "ticks": 239,
+    "capped": false,
+    "coverage": 0.9849,
+    "revisited": 103,
+    "worst_cell": 2,
+    "idle": 0.067,
+    "swaps": 20.0,
+    "spread": 0.998,
+    "seconds": 20.6,
+    "label": "auto+B"
   }
 ]
