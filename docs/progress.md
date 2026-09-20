@@ -1393,3 +1393,65 @@ It also means **the single "revisited cells" figure used in every benchmark so
 far conflated a topology cost with a strategy defect**, and they move in
 opposite directions. Reporting them separately is not a refinement; without it
 the aggregate can stay flat while both halves change.
+
+---
+
+## 2026-09-20 — The backtracking was the floor plan, not the strategy
+
+Correcting the entry above. It concluded that `large_indoor`'s long-gap revisits
+were a `NearestFrontier` defect, on the grounds that room revisits *invert* with
+drone count (225 at one drone, 49 at three) — which rules out contention. The
+inversion is real. The attribution was wrong.
+
+`loop_indoor` was built as the control: same 50x50 extent, same config, same
+everything but the floor plan — a racetrack corridor with twelve rooms, every
+one with two doorways, and **no cut vertex anywhere**. Its test suite proves the
+property rather than asserting it: plan a route, wall off its middle with a
+block wider than any passage in the scene, re-plan, and assert a second
+essentially disjoint route exists (measured: 272 vs 271 cells, 2 shared). The
+same procedure on `large_indoor` returns `None` for the second route. That
+contrast is the experiment.
+
+```
+                  room cells   room revisits (1 drone)   per 1000 cells
+large_indoor           50090                       225              4.5
+loop_indoor            43546                        15             0.34
+```
+
+**Thirteen times fewer.** Corridor share differs between the maps (13.3% vs
+22.3% of free space) so corridor counts are not directly comparable, but the
+room figure is, and a 13x gap is not explained by a 1.7x difference in zone
+share.
+
+### Why
+
+`large_indoor` is a **tree**: one junction, four quadrants, no second route
+anywhere. Finishing one quadrant and starting another forces a return through
+the junction and back across space already visited. That return is structural —
+no target-selection policy avoids it, because there is no other way through.
+`loop_indoor` lets a drone circulate forward and it simply does not backtrack.
+
+### What this costs the previous conclusion
+
+The strategy is not exonerated — 15 revisits is not 0, and the mechanism
+described earlier (once a neighbourhood is cleared, the cheapest remaining
+frontier is often back the way you came) is real. But it is a minority of the
+effect on the map where it was measured, and **Feature 7 was aimed at something
+that was never the dominant cause**. Its failure cost less than it appeared to.
+
+### The methodological point
+
+Three diagnostics in a row have now attributed an effect to the wrong layer:
+the division-of-labour metric confounded by coverage, the num_rays anomaly that
+was a premature stop, and this. The common shape is measuring one system and
+concluding about another. The control here — an identical configuration over a
+different topology — is what separated them, and it is cheap. **A benchmark with
+one map cannot distinguish a strategy property from a map property.**
+
+### Also measured
+
+`loop_indoor` at one drone finishes in 2296 ticks against `large_indoor`'s 3414,
+consistent with the backtracking account. At three drones it shows *more*
+corridor revisits (144 against 47) — the ring is a shared thoroughfare every
+drone circulates, where the cross is a junction they pass through. Different
+topologies, different bottlenecks, and neither is a strategy defect.
