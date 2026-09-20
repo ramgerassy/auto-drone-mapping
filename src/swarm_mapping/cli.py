@@ -20,11 +20,16 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+from numpy.typing import NDArray
 
 from swarm_mapping.config.loader import load_config
 from swarm_mapping.config.schema import ScenarioConfig
 from swarm_mapping.coordination.master import CentralizedMaster
-from swarm_mapping.mapping.export import save_npz, save_png
+from swarm_mapping.mapping.export import (
+    save_npz,
+    save_png,
+    save_visit_heatmap,
+)
 from swarm_mapping.mapping.grid import OccupancyGrid
 from swarm_mapping.mapping.mapper import Mapper
 from swarm_mapping.mapping.types import MapConfig
@@ -295,6 +300,7 @@ def run_pipeline(
     view: bool = False,
     drones: int | None = None,
     view_delay: float = _FRAME_DELAY_S,
+    visit_heatmaps: bool = False,
 ) -> MissionResult:
     """Run the full exploration pipeline and export the map.
 
@@ -305,6 +311,10 @@ def run_pipeline(
             map is identical whether or not this is enabled.
         view_delay: Extra seconds to pause per rendered tick. Ignored without
             `view`, and never affects the map.
+        visit_heatmaps: If True, also write one visit-count PNG per drone.
+            Diagnostic only — recording where each drone spent its ticks is
+            how repeated retreading of the same cells becomes visible, which a
+            coverage percentage hides entirely.
         drones: Optional override on the swarm size; takes the first N
             configured start positions.
 
@@ -328,9 +338,24 @@ def run_pipeline(
 
     viewer = _open_viewer(mission) if view else None
 
+    # Counted here rather than in the coordinator: this is a diagnostic, and
+    # `coordination` should not carry state that only a debug flag reads.
+    visits: dict[int, NDArray[np.int64]] = {}
+    if visit_heatmaps:
+        visits = {
+            drone_id: np.zeros(
+                (config.map.grid_height, config.map.grid_width), dtype=np.int64
+            )
+            for drone_id in master.drone_states
+        }
+
     try:
         while not master.is_complete and master.tick_count < max_ticks:
             master.tick()
+
+            for drone_id, counts in visits.items():
+                col, row = master.drone_states[drone_id].cell
+                counts[row, col] += 1
 
             if viewer is not None and viewer.is_running:
                 viewer.sync()
@@ -349,6 +374,15 @@ def run_pipeline(
         png_path = output_dir / "map.png"
         save_npz(mission.mapper.grid, npz_path)
         save_png(mission.mapper.grid, png_path, max_height=config.map.max_height)
+
+        for drone_id, counts in sorted(visits.items()):
+            heatmap_path = output_dir / f"visits_drone_{drone_id}.png"
+            save_visit_heatmap(counts, mission.mapper.grid, heatmap_path)
+            print(
+                f"Drone {drone_id}: {int(np.sum(counts > 0))} cells visited, "
+                f"{int(np.sum(counts > 1))} revisited, "
+                f"worst cell {int(counts.max())} times -> {heatmap_path}"
+            )
 
         result = MissionResult(
             ticks=master.tick_count,
@@ -424,6 +458,13 @@ def main() -> None:
         help="Enable verbose logging",
     )
     parser.add_argument(
+        "--visit-heatmaps",
+        action="store_true",
+        help="Write one visit-count PNG per drone alongside the map. "
+        "Diagnostic: shows where each drone spent its ticks and which cells it "
+        "retrod, which a coverage percentage hides",
+    )
+    parser.add_argument(
         "--view-delay",
         type=float,
         default=_FRAME_DELAY_S,
@@ -452,6 +493,7 @@ def main() -> None:
         view=args.view,
         drones=args.drones,
         view_delay=args.view_delay,
+        visit_heatmaps=args.visit_heatmaps,
     )
     _report(result)
 

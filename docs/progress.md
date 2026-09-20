@@ -1018,3 +1018,47 @@ behaviour** (flagged per CLAUDE.md): a `--view` run of `large_indoor` is now
 about 40% shorter in wall time, and identical in output — the delay never
 touched the map.
 
+
+### Addendum — the visit heatmap, and what it shows
+
+Added on the user's suggestion after watching a run: `--visit-heatmaps` writes
+one PNG per drone counting how many ticks it spent in each cell, drawn over the
+occupancy map. Counts are on a **log** ramp because they are heavy-tailed — a
+drone parked at base accrues dozens of visits to one cell while a corridor it
+swept once has a single visit, and a linear ramp renders everything but the
+parking spot identical.
+
+Counted in the CLI, not the coordinator: it is a diagnostic, and `coordination`
+should not carry state only a debug flag reads.
+
+**It immediately showed three things coverage had hidden.** On large_indoor,
+3 drones, 1498 ticks, 97.6% coverage:
+
+```
+Drone 0: 1103 cells visited, 221 revisited, worst cell  61 times
+Drone 1: 1204 cells visited, 198 revisited, worst cell   6 times
+Drone 2:  770 cells visited, 264 revisited, worst cell  16 times
+```
+
+1. **Work is divided badly.** Drone 0's map covers the western half and nothing
+   east; drone 2 never leaves the corridor junction and the one room beside it.
+   The spreading penalty separates *targets*, but nothing gives a drone a
+   region to own, so two drones can spend a mission in the same quadrant.
+2. **Drone 2 retreads 34% of the cells it visits** (264 of 770), concentrated
+   at the corridor crossing — it shuttles in and out rather than progressing.
+3. **Long diagonal traverses across already-explored rooms.** Drone 0's trace
+   is a zigzag spanning the whole west half repeatedly. `NearestFrontier` picks
+   the cheapest *reachable* frontier, and once a neighbourhood is cleared the
+   cheapest remaining one is often across the map — so the drone transits
+   explored space instead of sweeping.
+
+All three are the same underlying gap the user identified from the viewer: the
+strategy plans to *reach* a frontier cell when a 12 m sensor only needs a
+vantage point from which the frontier becomes *observable*. Frontier cells are
+adjacent to unknown space, which is usually against a wall, so "go to the
+frontier" means "cross the map to a wall" by construction.
+
+Next-best-view selection — score candidate *viewpoints* by expected information
+gain within sensor range, rather than scoring the frontier cells themselves —
+is the fix, and it is a `FrontierStrategy` change large enough to want its own
+plan rather than a late-sprint improvisation.

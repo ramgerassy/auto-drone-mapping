@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+from numpy.typing import NDArray
 from PIL import Image
 
 from swarm_mapping.mapping.grid import OccupancyGrid
@@ -84,3 +85,59 @@ def save_png(grid: OccupancyGrid, path: str | Path, max_height: float = 3.0) -> 
 
     img = Image.fromarray(pixels, mode="RGB")
     img.save(str(path))
+
+
+def save_visit_heatmap(
+    visits: NDArray[np.int_],
+    grid: OccupancyGrid,
+    path: str | Path,
+) -> None:
+    """Save a per-cell visit-count image for one drone, over the map.
+
+    A diagnostic, not a deliverable: it answers "where did this drone actually
+    spend its time, and how often did it retread the same cell", which is the
+    question a coverage percentage cannot. Heavy repeat visits show up as hot
+    spots, and their position relative to the walls is what makes the picture
+    worth having — so the occupancy map is drawn underneath rather than the
+    counts alone.
+
+    Colours:
+        - occupied cells: dark grey, for orientation
+        - unknown: pale blue, matching `save_png`
+        - visited 0 times: white
+        - visited 1+ times: yellow through red, on a **log** ramp
+
+    The ramp is logarithmic because visit counts are heavy-tailed — a drone
+    parked at its base accrues hundreds of visits to one cell while a corridor
+    it swept once has a single visit, and a linear ramp would render everything
+    except the parking spot as the same white.
+
+    The image origin is bottom-left (row 0 = bottom), matching `save_png` and
+    the world coordinate convention.
+
+    Args:
+        visits: Per-cell visit counts, shape (height, width), indexed
+            [row, col].
+        grid: The occupancy grid, drawn underneath for context.
+        path: Destination PNG path.
+    """
+    prob = grid.probability()
+    height, width = visits.shape
+    rgb = np.zeros((height, width, 3), dtype=np.uint8)
+
+    rgb[...] = (255, 255, 255)  # free and unvisited
+    rgb[(prob >= 0.4) & (prob <= 0.6)] = (214, 228, 240)  # unknown
+    rgb[prob > 0.6] = (70, 70, 78)  # occupied
+
+    seen = visits > 0
+    if np.any(seen):
+        # log1p keeps a single visit distinguishable from a hundred without
+        # the hundred flattening everything else.
+        weight = np.log1p(visits.astype(np.float64))
+        weight = weight / weight.max()
+        hot = np.zeros((height, width, 3), dtype=np.uint8)
+        hot[..., 0] = 255  # red channel is full across the ramp
+        hot[..., 1] = (255 * (1.0 - weight)).astype(np.uint8)  # yellow -> red
+        rgb[seen] = hot[seen]
+
+    Image.fromarray(np.flipud(rgb), mode="RGB").save(str(path))
