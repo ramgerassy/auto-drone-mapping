@@ -11,8 +11,14 @@ dependencies = [
     "pyyaml>=6.0",
 ]
 
+[project.optional-dependencies]
+# The operator console (Feature 13). Optional so the simulator, CI and the
+# Docker image never install it: `uv sync --extra ui`.
+ui = ["streamlit>=1.40"]
+
 [project.scripts]
 swarm-mapping = "swarm_mapping.cli:main"
+swarm-console = "swarm_mapping.app.launch:main"
 
 [dependency-groups]
 dev = [
@@ -62,6 +68,13 @@ packages = ["swarm_mapping"]
 
 [[tool.mypy.overrides]]
 module = ["mujoco.*", "yaml"]
+ignore_missing_imports = true
+
+# The console's optional extra (and pandas, which streamlit brings). CI syncs
+# without it, so mypy there must accept the imports as missing; locally, with
+# the extra, streamlit's own hints apply. pandas ships no stubs either way.
+[[tool.mypy.overrides]]
+module = ["streamlit", "streamlit.*", "pandas", "pandas.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
