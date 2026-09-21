@@ -15,13 +15,17 @@ repos:
       - id: ruff-format
 
   # Per-commit gate: regression suite (prior sprints, must not break) plus the
-  # fast sanity smoke. `or sanity` keeps the selection non-empty while
-  # regression is empty (Sprint 1). Runs only when Python files are staged.
+  # fast sanity smoke. Runs only when Python files are staged.
+  #
+  # `and not acceptance`: acceptance tests carry sprint markers too, so once
+  # their sprint closes they become "regression" — and without this clause
+  # every local commit would run the full-scenario suite (minutes). They run
+  # on PRs to main only, per CLAUDE.md. See docs/sprint-3-plan.md, Task 0.
   - repo: local
     hooks:
       - id: regression-tests
         name: regression + sanity tests
-        entry: uv run pytest -m "regression or sanity" -q
+        entry: uv run pytest -m "(regression or sanity) and not acceptance" -q
         language: system
         types: [python]
         pass_filenames: false
