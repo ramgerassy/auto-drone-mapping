@@ -61,7 +61,7 @@ class Coordinator(Protocol):
 
     @property
     def drone_states(self) -> Mapping[int, DroneState]:
-        """Read-only view of drone state, for visualization."""
+        """Read-only view of drone state, including health, for visualization."""
         ...
 
     def tick(self) -> None:

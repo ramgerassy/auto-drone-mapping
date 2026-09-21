@@ -26,7 +26,8 @@ import numpy as np
 
 from swarm_mapping.coordination.assignment import assign_all, next_cell
 from swarm_mapping.coordination.movement import resolve_moves
-from swarm_mapping.coordination.types import Cell, DroneState
+from swarm_mapping.coordination.types import Cell, DroneHealth, DroneState
+from swarm_mapping.mapping.grid import OccupancyGrid
 from swarm_mapping.mapping.mapper import Mapper
 from swarm_mapping.perception.protocols import Sensor
 from swarm_mapping.planning.frontier_strategy import FrontierStrategy
@@ -43,6 +44,10 @@ _LOGGER = logging.getLogger(__name__)
 # not the body width. (Break-even is 0.30/sqrt(2) = 0.21213; the widely-quoted
 # 0.212 sits just *below* it and would be rejected.)
 MIN_SEPARATION_FLOOR = 2.0 * DRONE_HALF_EXTENT * math.sqrt(2.0)
+
+# Log-odds written under a wreck in the planning overlay: well past the 0.6
+# band, so the planner treats it exactly like a confirmed obstacle.
+_WRECK_LOG_ODDS = 2.0
 
 
 class CentralizedMaster:
@@ -70,9 +75,20 @@ class CentralizedMaster:
             emitting small frontier regions, a few transiently reachable, so a
             swarm with nothing left to find never stops on its own. 0 disables
             the check.
+        return_to_base_ticks: Consecutive unassigned ticks after which an idle
+            drone flies back to its start cell. 0 keeps it parked.
+        assignment_mode: How frontiers are handed out — "greedy" or "global".
+        target_tolerance_cells: How far a live frontier may drift from a
+            drone's target before the target counts as gone.
+        heartbeat_timeout_ticks: Consecutive missed heartbeats after which a
+            drone is declared LOST. At least 1.
+        stuck_timeout_ticks: Consecutive granted moves that did not happen
+            after which a drone is declared STUCK. Waiting to yield never
+            counts. At least 1.
 
     Raises:
-        ValueError: If the swarm is empty, if min_separation is not finite, is
+        ValueError: If either failure-detection timeout is below 1, if the
+            swarm is empty, if min_separation is not finite, is
             below the body diagonal, or spans under one cell, or if two drones
             start closer together than min_separation — in metres or, once
             snapped to cells, in cells.
@@ -92,6 +108,8 @@ class CentralizedMaster:
         return_to_base_ticks: int = 0,
         assignment_mode: str = "greedy",
         target_tolerance_cells: int = 0,
+        heartbeat_timeout_ticks: int = 3,
+        stuck_timeout_ticks: int = 3,
     ) -> None:
         self._engine = engine
         self._sensor = sensor
@@ -128,8 +146,29 @@ class CentralizedMaster:
         self._target_tolerance = target_tolerance_cells
         self._idle_ticks: dict[int, int] = {}
         self._going_home: dict[int, list[Cell]] = {}
+        for name, value in (
+            ("heartbeat_timeout_ticks", heartbeat_timeout_ticks),
+            ("stuck_timeout_ticks", stuck_timeout_ticks),
+        ):
+            if value < 1:
+                msg = (
+                    f"{name} must be at least 1, got {value}: failure "
+                    "detection cannot be switched off"
+                )
+                raise ValueError(msg)
+        self._heartbeat_timeout = heartbeat_timeout_ticks
+        self._stuck_timeout = stuck_timeout_ticks
+        # Failure evidence, per drone. Consecutive counts: one good heartbeat
+        # or one realized move clears them.
+        self._missed: dict[int, int] = {}
+        self._unrealized: dict[int, int] = {}
 
         grid = mapper.grid
+        # Cells a wreck's body overlaps — the same overlap rule AStarPlanner
+        # uses for inflation. k = 1 at every resolution the scenarios use.
+        self._wreck_radius = (
+            math.ceil(DRONE_HALF_EXTENT / grid.config.resolution + 0.5) - 1
+        )
         # Every guard below is a `<` comparison and every comparison against
         # NaN is False, so without this a NaN would pass all of them — and then
         # `threshold_sq` in resolve_moves is NaN, every `d2 < NaN` is False, and
@@ -168,6 +207,8 @@ class CentralizedMaster:
             # scopes the system at 1-5 drones.
             msg = "no drones in the scene; the swarm must hold 1-5 drones"
             raise ValueError(msg)
+        # Drones whose heartbeat arrived this tick, in descending id order.
+        self._heard: list[int] = list(self._ordered_ids)
 
         self._states: dict[int, DroneState] = {}
         for drone_id in self._ordered_ids:
@@ -214,6 +255,9 @@ class CentralizedMaster:
         self._blocked = False
         self._unreachable_frontiers = 0
         self._tick_count = 0
+        # `swarm_lost` is a one-shot event: a finished mission may still be
+        # ticked, and must not report the loss again.
+        self._swarm_lost_logged = False
 
     @property
     def is_complete(self) -> bool:
@@ -262,7 +306,12 @@ class CentralizedMaster:
         return self._tick_count
 
     def tick(self) -> None:
-        """Advance the mission by one tick: sense, assign, then move."""
+        """Advance the mission one tick: observe, sense, assign, then move.
+
+        Observing comes first so that a failure declared this tick releases its
+        frontier before this tick's assignment pass hands frontiers out.
+        """
+        self._observe()
         self._sense()
         self._assign()
         self._move()
@@ -298,9 +347,69 @@ class CentralizedMaster:
                 },
             )
 
-    def _sense(self) -> None:
-        """Scan with every drone and fold the results into the shared map."""
+    def _observe(self) -> None:
+        """Poll heartbeats, then declare any drone whose evidence crossed a timeout.
+
+        The master learns of a failure only here, and only from what a ground
+        station would see: silence, or commanded moves that did not happen. A
+        LOST drone is no longer polled; a STUCK one still reports, and keeps
+        being sensed.
+
+        Until it is declared, a silent drone is still ACTIVE: within the
+        ≤ `heartbeat_timeout_ticks` window, the assignment pass may hand it a
+        new claim if its target evaporates. That claim is released on
+        declaration like any other.
+        """
+        self._heard = []
         for drone_id in self._ordered_ids:
+            health = self._states[drone_id].health
+            if health is DroneHealth.LOST:
+                continue
+            if self._engine.heartbeat(drone_id):
+                self._heard.append(drone_id)
+                self._missed[drone_id] = 0
+            elif health is DroneHealth.ACTIVE:
+                self._missed[drone_id] = self._missed.get(drone_id, 0) + 1
+
+        for drone_id in self._ordered_ids:
+            if self._states[drone_id].health is not DroneHealth.ACTIVE:
+                continue
+            if self._missed.get(drone_id, 0) >= self._heartbeat_timeout:
+                self._declare_failed(drone_id, DroneHealth.LOST)
+            elif self._unrealized.get(drone_id, 0) >= self._stuck_timeout:
+                self._declare_failed(drone_id, DroneHealth.STUCK)
+
+    def _declare_failed(self, drone_id: int, health: DroneHealth) -> None:
+        """Mark a drone failed for good and put its frontier back in the pool."""
+        state = self._states[drone_id]
+        released = state.assignment.region.cell if state.assignment else None
+        self._states[drone_id] = replace(
+            state, health=health, assignment=None, path_index=0, waited_ticks=0
+        )
+        self._going_home.pop(drone_id, None)
+        self._idle_ticks.pop(drone_id, None)
+        _LOGGER.warning(
+            "drone_failed",
+            extra={
+                "drone_id": drone_id,
+                "health": health.value,
+                "tick": self._tick_count,
+                "released": list(released) if released is not None else None,
+            },
+        )
+
+    def _read_cell(self, drone_id: int) -> Cell:
+        """Where the localizer says the drone is, snapped to the grid."""
+        position = self._engine.get_pose(drone_id).position
+        return self._mapper.grid.world_to_grid(float(position[0]), float(position[1]))
+
+    def _sense(self) -> None:
+        """Scan with every drone heard this tick and fold the results into the map.
+
+        A drone that missed its heartbeat sent no telemetry, so there is no scan
+        to integrate (F10-R3).
+        """
+        for drone_id in self._heard:
             self._mapper.integrate_scan(self._sensor.scan(drone_id))
 
     def _assign(self) -> None:
@@ -333,16 +442,30 @@ class CentralizedMaster:
                 )
         frontiers = [f for f in frontiers if f.cell not in self._exhausted]
 
-        self._states = assign_all(
-            self._mapper.grid,
+        # Only ACTIVE drones are handed frontiers. Failed drones hold no
+        # assignment, so they never reach the `_exhausted` loop above either.
+        active = {
+            d: s for d, s in self._states.items() if s.health is DroneHealth.ACTIVE
+        }
+        # The overlay also reaches `frontier_cells(grid)` inside `assign_all`,
+        # the set a committed target must still be in to survive. That is
+        # benign: frontier cells under a wreck's footprint are unreachable
+        # anyway, so dropping them from the survival check loses nothing.
+        assigned = assign_all(
+            self._planning_grid(),
             frontiers,
-            self._states,
+            active,
             self._strategy,
             self._planner,
             self._max_wait_ticks,
             target_tolerance_cells=self._target_tolerance,
             mode=self._assignment_mode,
         )
+        # Merge back into a copy of the full table: key order is descending id
+        # and must stay that way, since `_move` and `resolve_moves` iterate it.
+        merged = dict(self._states)
+        merged.update(assigned)
+        self._states = merged
         # Nothing assignable to anyone means no drone can make progress. The
         # frontier count is what separates the two reasons for that, and it is
         # already in hand — discarding it is what made a walled-out mission
@@ -361,6 +484,42 @@ class CentralizedMaster:
                     "unreachable_frontiers": self._unreachable_frontiers,
                 },
             )
+        # No ACTIVE drone left: `_complete` and `_blocked` already come out
+        # right above, since every failed state holds `assignment=None`.
+        if not active and not self._swarm_lost_logged:
+            self._swarm_lost_logged = True
+            _LOGGER.warning(
+                "swarm_lost",
+                extra={
+                    "tick": self._tick_count,
+                    "unreachable_frontiers": len(frontiers),
+                },
+            )
+
+    def _planning_grid(self) -> OccupancyGrid:
+        """The grid to plan on: the map, plus every wreck as an obstacle.
+
+        A failed drone is a physical body the map deliberately does not
+        contain — the teammate filter keeps drones out of it, and the map's
+        accuracy KPI depends on that. So wrecks go into a copy used for
+        planning only; nothing written here reaches the exported map.
+        """
+        grid = self._mapper.grid
+        wrecks = [
+            self._states[d].cell
+            for d in self._ordered_ids
+            if self._states[d].health is not DroneHealth.ACTIVE
+        ]
+        if not wrecks:
+            return grid
+        overlay = OccupancyGrid(grid.config)
+        overlay.log_odds[:] = grid.log_odds
+        k = self._wreck_radius
+        for col, row in wrecks:
+            overlay.log_odds[
+                max(0, row - k) : row + k + 1, max(0, col - k) : col + k + 1
+            ] = _WRECK_LOG_ODDS
+        return overlay
 
     def _update_idle_drones(self) -> None:
         """Send a drone home once it has sat unassigned for long enough.
@@ -370,6 +529,8 @@ class CentralizedMaster:
         trip home immediately.
         """
         for drone_id, state in self._states.items():
+            if state.health is not DroneHealth.ACTIVE:
+                continue
             if state.assignment is not None:
                 self._idle_ticks[drone_id] = 0
                 self._going_home.pop(drone_id, None)
@@ -386,7 +547,7 @@ class CentralizedMaster:
             ):
                 continue
 
-            path = self._planner.plan(self._mapper.grid, state.cell, home)
+            path = self._planner.plan(self._planning_grid(), state.cell, home)
             if path is not None:
                 self._going_home[drone_id] = path[1:]
                 _LOGGER.info(
@@ -399,13 +560,22 @@ class CentralizedMaster:
         current: dict[int, Cell] = {
             drone_id: state.cell for drone_id, state in self._states.items()
         }
+        # Only ACTIVE drones that were heard this tick get a desired cell.
+        # Everyone else holds station but stays in `current`, so `resolve_moves`
+        # keeps teammates clear of them as static bodies.
+        heard = set(self._heard)  # membership only; never iterated
         desired: dict[int, Cell | None] = {
-            drone_id: next_cell(state) for drone_id, state in self._states.items()
+            drone_id: (
+                next_cell(state)
+                if state.health is DroneHealth.ACTIVE and drone_id in heard
+                else None
+            )
+            for drone_id, state in self._states.items()
         }
         # An idle drone on its way home has no assignment, so `next_cell` gives
         # it nothing; its route lives here instead.
         for drone_id, route in self._going_home.items():
-            if route:
+            if route and drone_id in heard:
                 desired[drone_id] = route[0]
         final = resolve_moves(current, desired, self._min_separation_cells)
 
@@ -413,13 +583,22 @@ class CentralizedMaster:
             state = self._states[drone_id]
             cell = final[drone_id]
             if cell != state.cell:
+                self._teleport(drone_id, cell)
+                actual = self._read_cell(drone_id)
+                if actual != cell:
+                    # Granted and commanded, but the drone did not arrive. The
+                    # state follows the localizer, the path does not advance,
+                    # and `_observe` weighs the count next tick.
+                    self._unrealized[drone_id] = self._unrealized.get(drone_id, 0) + 1
+                    self._states[drone_id] = replace(state, cell=actual)
+                    continue
+                self._unrealized[drone_id] = 0
                 self._states[drone_id] = replace(
                     state,
                     cell=cell,
                     path_index=state.path_index + 1,
                     waited_ticks=0,
                 )
-                self._teleport(drone_id, cell)
                 homeward = self._going_home.get(drone_id)
                 if homeward and homeward[0] == cell:
                     homeward.pop(0)

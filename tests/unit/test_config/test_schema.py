@@ -66,6 +66,8 @@ def valid_config() -> dict[str, Any]:
             "target_tolerance_cells": 0,
             "no_progress_ticks": 200,
             "return_to_base_ticks": 150,
+            "heartbeat_timeout_ticks": 3,
+            "stuck_timeout_ticks": 3,
         },
     }
 
