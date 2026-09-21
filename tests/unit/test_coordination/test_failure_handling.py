@@ -7,6 +7,7 @@ finding them from symptoms is the property under test.
 
 from __future__ import annotations
 
+import inspect
 import logging
 import math
 from pathlib import Path
@@ -296,3 +297,46 @@ class TestWreck:
         master, mapper, (wc, wr) = self._wrecked(scene)
         run_to_end(master)
         assert mapper.grid.probability()[wr, wc] <= 0.6
+
+
+class TestSwarmLost:
+    """Plan test 10: every drone failed."""
+
+    def test_losing_every_drone_ends_the_mission(
+        self, scene: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Terminates, reports blocked, logs swarm_lost exactly once."""
+        caplog.set_level(logging.INFO)
+        master, engine, _ = build_master(scene, {0: (-1.5, 0.0), 1: (1.5, 0.0)})
+        run(master, 2)  # map something first, so frontiers remain
+        engine.fail_drone(0, FailureMode.SILENT)
+        engine.fail_drone(1, FailureMode.SILENT)
+        run(master, 3)
+        assert master.is_complete
+        assert master.is_blocked  # frontiers remained
+        run(master, 2)  # ticking a finished mission must not log it again
+        assert len(events(caplog, "swarm_lost")) == 1
+
+
+class TestSymptomsOnly:
+    """Plan test 14: diagnosis comes from symptoms alone."""
+
+    def test_the_master_is_never_given_the_schedule(self) -> None:
+        """No constructor parameter carries failure knowledge."""
+        params = inspect.signature(CentralizedMaster.__init__).parameters
+        assert not any("fail" in name or "schedule" in name for name in params)
+
+    def test_diagnosis_matches_the_injected_truth(self, scene: Path) -> None:
+        """SILENT is diagnosed LOST, STUCK is STUCK, and the healthy drone is ACTIVE."""
+        master, engine, _ = build_master(
+            scene, {0: (-1.5, -1.5), 1: (1.5, -1.5), 2: (0.0, 1.5)}
+        )
+        engine.fail_drone(0, FailureMode.SILENT)
+        engine.fail_drone(1, FailureMode.STUCK)
+        run(master, 6)
+        health = {d: s.health for d, s in master.drone_states.items()}
+        assert health == {
+            0: DroneHealth.LOST,
+            1: DroneHealth.STUCK,
+            2: DroneHealth.ACTIVE,
+        }

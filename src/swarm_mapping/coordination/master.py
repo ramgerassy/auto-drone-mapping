@@ -255,6 +255,9 @@ class CentralizedMaster:
         self._blocked = False
         self._unreachable_frontiers = 0
         self._tick_count = 0
+        # `swarm_lost` is a one-shot event: a finished mission may still be
+        # ticked, and must not report the loss again.
+        self._swarm_lost_logged = False
 
     @property
     def is_complete(self) -> bool:
@@ -470,6 +473,17 @@ class CentralizedMaster:
                 extra={
                     "tick": self._tick_count,
                     "unreachable_frontiers": self._unreachable_frontiers,
+                },
+            )
+        # No ACTIVE drone left: `_complete` and `_blocked` already come out
+        # right above, since every failed state holds `assignment=None`.
+        if not active and not self._swarm_lost_logged:
+            self._swarm_lost_logged = True
+            _LOGGER.warning(
+                "swarm_lost",
+                extra={
+                    "tick": self._tick_count,
+                    "unreachable_frontiers": len(frontiers),
                 },
             )
 
