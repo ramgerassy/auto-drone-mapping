@@ -2,7 +2,7 @@
 
 A running journal of non-obvious decisions, trade-offs, and thoughts worth
 remembering — the *why* behind choices that the code and git history don't
-capture on their own. Newest entries at the top. Each entry records what was
+capture on their own. Entries run oldest to newest. Each entry records what was
 decided, why, and its current status.
 
 ---
@@ -1333,3 +1333,321 @@ rejected everything after that metric was corrected. Revision 3 recommends A+B
 again — not because revision 2 was wrong about the data it had, but because the
 system underneath it changed. Worth separating: a wrong measurement is a
 mistake, a changed system is not.
+
+---
+
+## 2026-09-20 — Scaling KPI, and splitting one number into two causes
+
+`large_indoor` showed drones leaving a region and returning 600-1000 ticks
+later, which had been loosely called "wasted travel". Sweeping drone count and
+classifying each long-gap revisit by *where* it happened shows it was never one
+phenomenon.
+
+```
+drones  ticks  t@95%   speedup   corridor rev  room rev   balance
+     1   3414   2371        —              89       225     100%
+     2   1664   1311     1.81x             74        73      96%
+     3   1112    811     2.92x             47        49      92%
+     4   1123    625     3.79x             65        54      87%
+     5    894    517     4.59x            103       134      79%
+```
+
+### The scaling KPI passes
+
+4.59x from one drone to five, against CLAUDE.md's >=2x commitment, with
+per-drone efficiency between 0.90 and 0.97 throughout — near-linear. 1->3 is
+2.92x against the >=1.5x figure. This is the first time the KPI has been
+measured beyond three drones; `large_indoor`'s config only defined three start
+positions, and `build_mission` refuses to invent more (correctly — a start
+position has to be collision-free, in bounds and clear of its neighbours). Two
+were added on the east-west corridor arm.
+
+### Two causes, pulling opposite ways
+
+**Room revisits invert with drone count**: 225 at one drone, 49 at three. If
+backtracking were contention it would rise, not fall. A single drone has nobody
+to contend with, so those 225 returns are the *strategy* sending it back across
+the map — `NearestFrontier` picks the cheapest reachable frontier, and once a
+neighbourhood is cleared the cheapest remaining one is often somewhere it has
+already been.
+
+**Corridor revisits rise again past three drones**: 47 at three, 103 at five,
+with balance decaying 100% -> 79%. `large_indoor` is a corridor *cross* — one
+junction, four quadrants — so every inter-quadrant trip crosses the same cells.
+That is the topology's cost, not a strategy failure, and it is what contention
+looks like when it arrives.
+
+Three drones happens to sit at the crossover for this map. Note that
+ticks-to-completion *worsens* from 3 to 4 drones (1112 -> 1123) while
+time-to-95% keeps improving: the tail is contention, not exploration.
+
+### Why this matters for what to fix
+
+Neither allocation change (global assignment, target tolerance) moved the
+long-gap numbers much, and now it is clear why: both change *who goes where*,
+and the dominant cause at low drone counts is *what is worth going to*. That is
+`FrontierStrategy`'s job, and it is where Feature 7 aimed before failing on
+cost.
+
+It also means **the single "revisited cells" figure used in every benchmark so
+far conflated a topology cost with a strategy defect**, and they move in
+opposite directions. Reporting them separately is not a refinement; without it
+the aggregate can stay flat while both halves change.
+
+---
+
+## 2026-09-20 — The backtracking was the floor plan, not the strategy
+
+Correcting the entry above. It concluded that `large_indoor`'s long-gap revisits
+were a `NearestFrontier` defect, on the grounds that room revisits *invert* with
+drone count (225 at one drone, 49 at three) — which rules out contention. The
+inversion is real. The attribution was wrong.
+
+`loop_indoor` was built as the control: same 50x50 extent, same config, same
+everything but the floor plan — a racetrack corridor with twelve rooms, every
+one with two doorways, and **no cut vertex anywhere**. Its test suite proves the
+property rather than asserting it: plan a route, wall off its middle with a
+block wider than any passage in the scene, re-plan, and assert a second
+essentially disjoint route exists (measured: 272 vs 271 cells, 2 shared). The
+same procedure on `large_indoor` returns `None` for the second route. That
+contrast is the experiment.
+
+```
+                  room cells   room revisits (1 drone)   per 1000 cells
+large_indoor           50090                       225              4.5
+loop_indoor            43546                        15             0.34
+```
+
+**Thirteen times fewer.** Corridor share differs between the maps (13.3% vs
+22.3% of free space) so corridor counts are not directly comparable, but the
+room figure is, and a 13x gap is not explained by a 1.7x difference in zone
+share.
+
+### Why
+
+`large_indoor` is a **tree**: one junction, four quadrants, no second route
+anywhere. Finishing one quadrant and starting another forces a return through
+the junction and back across space already visited. That return is structural —
+no target-selection policy avoids it, because there is no other way through.
+`loop_indoor` lets a drone circulate forward and it simply does not backtrack.
+
+### What this costs the previous conclusion
+
+The strategy is not exonerated — 15 revisits is not 0, and the mechanism
+described earlier (once a neighbourhood is cleared, the cheapest remaining
+frontier is often back the way you came) is real. But it is a minority of the
+effect on the map where it was measured, and **Feature 7 was aimed at something
+that was never the dominant cause**. Its failure cost less than it appeared to.
+
+### The methodological point
+
+Three diagnostics in a row have now attributed an effect to the wrong layer:
+the division-of-labour metric confounded by coverage, the num_rays anomaly that
+was a premature stop, and this. The common shape is measuring one system and
+concluding about another. The control here — an identical configuration over a
+different topology — is what separated them, and it is cheap. **A benchmark with
+one map cannot distinguish a strategy property from a map property.**
+
+### Also measured
+
+`loop_indoor` at one drone finishes in 2296 ticks against `large_indoor`'s 3414,
+consistent with the backtracking account. At three drones it shows *more*
+corridor revisits (144 against 47) — the ring is a shared thoroughfare every
+drone circulates, where the cross is a junction they pass through. Different
+topologies, different bottlenecks, and neither is a strategy defect.
+
+### Addendum — five drones on the loop, and a confound in the comparison
+
+```
+loop_indoor   drones  ticks  t@95%   corridor rev  room rev  balance
+                   1   2296   2047             31        15     100%
+                   3   1432    807            144        38      85%
+                   5    688    641              1         0      86%
+```
+
+Five drones: **one corridor revisit, zero room revisits**, and 3.19x scaling
+1->5. That is not drone count doing the work. The five spawns sit on four ring
+legs plus a corner, so each drone owns a sector and never traverses; three
+spawns cover three of four legs, so they must travel to reach the south.
+
+**Which exposes a confound in the cross-map comparison above.**
+`large_indoor` clusters every spawn at the corridor junction; `loop_indoor`
+spreads them around the ring. The one-drone rows are clean — a single spawn
+either way — so the 13x room-revisit finding stands. The multi-drone rows were
+never like-for-like and should not be read as topology alone.
+
+Tested directly on `large_indoor`, three drones:
+
+```
+spawn layout            ticks  t@95%   corridor rev  room rev
+clustered (current)      1112    811             47        49
+spread along the arm     1152   1084             33        37
+```
+
+Spreading cuts revisits by a third and costs **33% more time to 95%**. So there
+is no general "spread the spawns" rule: the loop's result came from spawns
+matching that topology's natural sectors, and a cross has no sectors to match.
+Spawn placement is a real lever, it interacts with the floor plan, and it is not
+free.
+
+Worth noting what this means for the KPI numbers: **start positions are a tuned
+parameter of every scenario**, as load-bearing as the allocation policy, and
+nothing in the config says so. A scenario author picking spawns is choosing part
+of the result.
+
+---
+
+## 2026-09-21 — We tested the next-best-view hypothesis instead of building it
+
+**The hypothesis**, carried since Sprint 2 and restated at the close of Sprint
+2.5: `NearestFrontier` wastes travel because it ranks frontiers on distance
+alone and ignores how much each would reveal, so a strategy weighing expected
+information gain would explore measurably faster.
+
+That claim had already cost three abandoned attempts at
+`InformationGainFrontier`, each killed on cost — tracing line-of-sight from
+every candidate against a *belief* map ran ~17x slower per tick for no measured
+benefit. A fourth attempt would have been the third time this project built
+something before measuring whether it was worth building. So we tested the
+hypothesis directly.
+
+### The instrument
+
+`benchmarks/oracle.py` — a `FrontierStrategy` that cheats. It scores each
+candidate with the *exact* number of unknown cells a visit would reveal, traced
+over the ground-truth scene rather than estimated from the map so far. No
+implementable strategy can score better than exactly right, so it bounds the
+whole family from above: whatever it fails to win is not available at any
+price.
+
+It deliberately does not cheat at two things. **Routing** stays on the belief
+grid through known-free cells, exactly as the shipped system flies — an oracle
+taking shortcuts through unmapped space would be measuring a different system.
+**Candidates** come from the live map — it chooses better among the same
+options, it does not invent options. So the bound covers target selection and
+nothing else, which is exactly what a `FrontierStrategy` controls.
+
+The instrument is tested (`tests/unit/test_benchmarks/test_oracle.py`, 10
+tests) for a specific reason: three diagnostics in this project have now
+produced confident wrong conclusions because the *instrument* was wrong, not
+the system. One test asserts the visible set of an open room is a complete
+disc, because too sparse a ray fan would silently under-count gain at range and
+quietly deflate the bound in exactly the direction that flatters the verdict.
+
+### Finding 1 — the strategy seam selects nothing in any shipped scenario
+
+Found before the sweep could run, by instrumenting the live call. Over four
+missions on two maps at one and three drones: **718 selection calls, every one
+with exactly one candidate.** Tick counts reproduced the known baselines
+exactly (3414 / 1112 / 2296 / 1432), so the probe was not perturbing the runs.
+
+The cause is `assignment: global`, which all four scenarios ship. In
+`_assign_globally` the target is chosen by `coordination/allocation.py` — a
+Dijkstra cost field plus a swarm-wide matching — and the strategy is then handed
+a one-element list:
+
+```python
+assignment = strategy.select(grid, [by_cell[target]], state.cell, claimed)
+```
+
+`NearestFrontier` is a router. Its cost ranking, its lower-bound pruning and
+its spreading penalty never execute in any shipped configuration. The control
+confirms the mode is the cause — same map under `greedy`:
+
+```
+mode                 calls with >1 candidate   oracle would differ
+global (shipped)                          0%                     —
+greedy, 1 drone             99% (up to 16)                    89%
+greedy, 3 drones                       100%                    30%
+```
+
+**This reframes all three earlier failures.** `InformationGainFrontier` was not
+merely aimed at a minority cause; it was aimed at a seam the shipped system
+routes around. It would have been invisible even had it worked.
+
+It is also an architecture-level flag: CLAUDE.md names `FrontierStrategy` as
+one of four stability points and describes it as the extensibility seam for
+exploration policy. In the code as shipped, it does not select. The swarm's
+actual exploration policy is "nearest frontier, globally matched", and there is
+no notion of expected information anywhere in the system.
+
+### Finding 2 — a perfect strategy is roughly break-even
+
+Swept on `large_indoor` under `greedy`, the only mode where a strategy can act.
+`decay` weights distance against gain; `decay=0` is pure information gain and a
+large `decay` collapses onto nearest-frontier, so the family contains the
+baseline at one end and the sweep is a bound over it rather than a verdict on
+one weighting.
+
+```
+drones  variant          ticks   t@95%      cov   revis   path
+     1  baseline          3414    2371   97.37%     503   3413
+     1  oracle d=0        4000       —   91.43%     992   4000   capped
+     1  oracle d=0.05     4000    2043   97.34%     591   4000   capped
+     1  oracle d=0.1      3862    1934   97.36%     664   3861
+     1  oracle d=0.2      3303    1976   97.36%     460   3302
+     1  oracle d=0.5      3205       —   88.76%     232   3205   stalled
+     3  baseline          1049     743   97.36%     229   2864
+     3  oracle d=0        2987    1398   97.35%    1991   8754
+     3  oracle d=0.05     1427     686   97.35%     529   4217
+     3  oracle d=0.1      2522     619   97.34%     666   4509   stalled
+     3  oracle d=0.2      1411     617   97.36%     508   4076
+     3  oracle d=0.5      1157     666   97.36%     308   3375
+```
+
+Best completed oracle run against baseline:
+
+```
+                time to 95%   total ticks   distance travelled
+1 drone  d=0.2         -17%           -3%                 -3%
+3 drones d=0.2         -17%          +35%                +42%
+```
+
+**The hypothesis does not survive.** A perfect, unimplementable oracle reaches
+95% coverage 17% sooner and pays for it with a 35% longer mission and 42% more
+travel at three drones. It front-loads the big reveals and then pays to mop up
+what it scattered. That is the ceiling; every real implementation sits below
+it, and the one that was attempted ran 17x slower per tick, which swallows a
+17% gain several times over.
+
+`d=0` — pure information gain, distance ignored — is catastrophic at both swarm
+sizes: capped at 91% coverage with one drone, 8.7x the revisits with three.
+Distance dominates gain on these maps. That is a property of the problem, not a
+tuning artifact.
+
+Caveats kept in the open: three of twelve runs ended capped or stalled, so
+their tick counts are censored rather than measured and are excluded from the
+comparison; and this is one map, so it is a statement about `large_indoor`
+rather than a law.
+
+### Decision
+
+**Do not build a next-best-view strategy.** It is bypassed in the shipped
+configuration, and where it is not bypassed a perfect version is break-even at
+best. Recorded as a closed question rather than deferred work.
+
+The instrument is kept rather than deleted. A decision not to build is only
+worth as much as the evidence behind it, and in three weeks the claim "we
+measured the ceiling at 17%" is unverifiable without the code that measured it.
+
+### What this opens instead
+
+Two real levers, both cheaper than NBV:
+
+1. **The allocator, not the strategy.** If expected information gain is worth
+   having at all, it belongs in `allocate`'s cost function, which is currently
+   pure distance. That is where target selection actually happens.
+2. **`greedy` may now beat `global`.** On `large_indoor` at three drones,
+   `greedy` finished in **1049** ticks against `global`'s **1112** at identical
+   coverage. A+B was adopted before the elevation-sweep sensor landed, so the
+   allocator may have quietly regressed against a sensor that no longer exists.
+   One run, so it is a question rather than a finding — but a cheap one to
+   settle.
+
+### Methodological note
+
+This is the first time the project has answered "should we build X" by building
+an instrument instead of building X. It cost a day and closed a question that
+had already consumed three attempts. The generalisation worth keeping: **an
+upper bound is usually cheaper to measure than a feature is to build, and it
+can only be measured before the feature exists.**
