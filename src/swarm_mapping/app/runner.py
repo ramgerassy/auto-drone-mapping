@@ -69,6 +69,9 @@ class RunRequest:
         drones: Swarm size, passed to `--drones`.
         variant: Allocation variant label, a key of `records.VARIANTS`.
         view: Open the live MuJoCo viewer (`--view`).
+        min_drones: The fewest drones this scenario can run with — see
+            `ScenarioChoice.min_drones`. Defaults to 1 (no failure schedule),
+            so callers outside the console need not set it.
     """
 
     config_path: Path
@@ -76,6 +79,7 @@ class RunRequest:
     drones: int
     variant: str
     view: bool
+    min_drones: int = 1
 
     def __post_init__(self) -> None:
         """Reject a request the CLI could not run as labelled."""
@@ -84,6 +88,13 @@ class RunRequest:
             raise ValueError(msg)
         if self.drones < 1:
             msg = f"drones must be at least 1, got {self.drones}"
+            raise ValueError(msg)
+        if self.drones < self.min_drones:
+            msg = (
+                f"drones must be at least {self.min_drones} for {self.scenario!r} "
+                f"(its failure schedule names a drone that would be missing), "
+                f"got {self.drones}"
+            )
             raise ValueError(msg)
 
 
@@ -201,6 +212,12 @@ class ScenarioChoice:
         name: The scenario's directory name.
         config_path: Its `config.yaml`.
         spawns: Start positions it declares; None if the config does not load.
+        min_drones: The fewest drones a run can use. 1, unless the config has
+            a `failures:` schedule, in which case it is one more than the
+            highest drone id the schedule names — a run with fewer drones
+            than that would drop a scheduled drone, and `FailureInjector`
+            raises `ValueError` at startup rather than run with a schedule it
+            cannot honour.
         problems: `validate_scenario`'s findings under the default rules;
             empty means it can be run.
     """
@@ -208,7 +225,27 @@ class ScenarioChoice:
     name: str
     config_path: Path
     spawns: int | None
+    min_drones: int
     problems: list[str]
+
+
+def _min_drones(config_path: Path) -> int:
+    """The fewest drones this config's failure schedule needs, else 1.
+
+    Args:
+        config_path: The scenario YAML.
+
+    Returns:
+        1 if the config does not load or declares no failures; otherwise one
+        more than the highest `drone_id` any scheduled failure names.
+    """
+    try:
+        failures = load_config(config_path).failures
+    except Exception:  # already reported in `problems`, in the validator's words
+        return 1
+    if not failures:
+        return 1
+    return max(failure.drone_id for failure in failures) + 1
 
 
 def scenario_choices(root: Path) -> list[ScenarioChoice]:
@@ -234,6 +271,7 @@ def scenario_choices(root: Path) -> list[ScenarioChoice]:
                 name=config_path.parent.name,
                 config_path=config_path,
                 spawns=spawns,
+                min_drones=_min_drones(config_path),
                 problems=problems,
             )
         )

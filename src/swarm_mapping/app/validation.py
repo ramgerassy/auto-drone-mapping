@@ -3,7 +3,7 @@
 The rules are the sprint plan's D2 reading of "can spawn up to 5 drones": the
 config declares its start positions and **every one is usable** — inside the
 grid, clear of the scene's geometry, and far enough from the others — so any
-run from one drone up to all of them works.
+drone count that includes every drone the failure schedule names works.
 
 Each rule is checked by the component that already owns it rather than
 re-implemented here: `config` parses and bounds-checks, MuJoCo decides what

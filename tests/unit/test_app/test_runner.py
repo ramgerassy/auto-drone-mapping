@@ -216,6 +216,7 @@ class TestScenarioChoices:
         assert choices[1].problems == []
         assert choices[1].spawns == 3
         assert choices[1].config_path == good / "config.yaml"
+        assert choices[1].min_drones == 1
 
     def test_unparseable_config_has_no_spawn_count(self, tmp_path: Path) -> None:
         """A config that does not load has problems and no count."""
@@ -227,10 +228,82 @@ class TestScenarioChoices:
 
         assert choice.spawns is None
         assert choice.problems
+        assert choice.min_drones == 1
 
     def test_missing_root_is_empty(self, tmp_path: Path) -> None:
         """No scenarios root means no scenarios, not an error."""
         assert scenario_choices(tmp_path / "nowhere") == []
+
+    def test_min_drones_without_a_failure_schedule_is_one(self, tmp_path: Path) -> None:
+        """A scenario with no `failures:` section can run with just one drone."""
+        room = tmp_path / "no_failures"
+        room.mkdir()
+        (room / "config.yaml").write_text(SMALL_INDOOR.read_text())
+
+        (choice,) = scenario_choices(tmp_path)
+
+        assert choice.min_drones == 1
+
+    def test_min_drones_is_the_highest_scheduled_drone_plus_one(
+        self, tmp_path: Path
+    ) -> None:
+        """`ScenarioChoice.min_drones` covers the console.py:148-157 hole.
+
+        Offering 1..spawns for a scenario whose failure schedule names a
+        higher drone than "1 drone" leaves would make `FailureInjector`
+        raise `ValueError` at startup (simulation/failure.py:54-60) for a
+        drone count `validate_scenario` still calls valid, because it only
+        ever builds with *all* the declared drones.
+        """
+        room = tmp_path / "with_failures"
+        room.mkdir()
+        raw = yaml.safe_load(SMALL_INDOOR.read_text())  # 3 start positions
+        raw["failures"] = [{"drone": 2, "tick": 50, "mode": "silent"}]
+        (room / "config.yaml").write_text(yaml.safe_dump(raw))
+
+        (choice,) = scenario_choices(tmp_path)
+
+        assert choice.problems == []
+        assert choice.min_drones == 3  # highest scheduled drone (2) + 1
+
+    def test_min_drones_uses_the_highest_of_several_scheduled_failures(
+        self, tmp_path: Path
+    ) -> None:
+        """Several scheduled failures: the minimum is set by the highest id."""
+        room = tmp_path / "with_failures"
+        room.mkdir()
+        raw = yaml.safe_load(SMALL_INDOOR.read_text())  # 3 start positions
+        raw["failures"] = [
+            {"drone": 0, "tick": 10, "mode": "silent"},
+            {"drone": 2, "tick": 50, "mode": "stuck"},
+        ]
+        (room / "config.yaml").write_text(yaml.safe_dump(raw))
+
+        (choice,) = scenario_choices(tmp_path)
+
+        assert choice.min_drones == 3
+
+
+class TestRunRequestRejectsTooFewDrones:
+    """`RunRequest` refuses a drone count below the scenario's `min_drones`.
+
+    Defense in depth alongside the console's slider minimum: a caller that
+    builds a `RunRequest` directly (a test, a future entry point) still can't
+    hand the CLI a drone count that drops a drone the failure schedule names.
+    """
+
+    def test_drones_below_min_drones_is_rejected(self) -> None:
+        """One below the minimum is refused, with the minimum in the message."""
+        with pytest.raises(ValueError, match="at least 3"):
+            request(drones=2, min_drones=3)
+
+    def test_drones_at_min_drones_is_accepted(self) -> None:
+        """Exactly the minimum is a valid request."""
+        assert request(drones=3, min_drones=3).drones == 3
+
+    def test_min_drones_defaults_to_one(self) -> None:
+        """Callers outside the console (existing tests, the CLI) are unaffected."""
+        assert request(drones=1).min_drones == 1
 
 
 class TestLaunch:

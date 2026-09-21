@@ -111,8 +111,8 @@ def _show_finished(active: dict[str, Any]) -> None:
     else:
         st.warning(
             f"Run exited with code {process.returncode}: {run_dir}. The mission "
-            "stopped short (blocked or tick-capped) or the run crashed; the "
-            "record below or the console output says which."
+            "did not finish on its own (tick cap), lost every drone, or "
+            "crashed — see the output below."
         )
     try:
         record = load_run(run_dir)
@@ -146,15 +146,34 @@ def _run_page() -> None:
     name = st.selectbox("Scenario", list(by_name), key="run_scenario")
     choice = by_name[name]
     spawns = choice.spawns or 1
+    # `min_drones` is 1 unless the scenario has a failure schedule, in which
+    # case config parsing already guarantees drone_id < spawns, so it can
+    # never exceed spawns here.
+    minimum = choice.min_drones
     # Keys carry the scenario name: each scenario keeps its own choices, and a
     # slider never holds a value beyond another scenario's spawn count.
-    if spawns > 1:
+    if minimum < spawns:
         drones = st.slider(
-            "Drones", 1, spawns, value=spawns, key=f"drones::{choice.name}"
+            "Drones", minimum, spawns, value=spawns, key=f"drones::{choice.name}"
         )
+        if minimum > 1:
+            st.caption(
+                f"Minimum {minimum}: the failure schedule fails drone "
+                f"{minimum - 1}, which must be present in the run."
+            )
     else:
-        drones = 1
-        st.caption("Drones: 1 (the scenario declares one start position)")
+        # Only reachable when minimum == spawns: either spawns == 1 (no
+        # failure schedule, nothing else to say) or minimum > 1 (a failure
+        # schedule needs every declared drone) — minimum > 1 with spawns > 1
+        # and minimum < spawns is the slider case above.
+        drones = spawns
+        if spawns == 1:
+            st.caption("Drones: 1 (the scenario declares one start position)")
+        else:
+            st.caption(
+                f"Drones: {spawns} (the failure schedule fails drone "
+                f"{minimum - 1}, so every drone must be present)"
+            )
 
     coordination = load_config(choice.config_path).coordination
     configured = variant_label(
@@ -184,6 +203,7 @@ def _run_page() -> None:
             drones=int(drones),
             variant=str(variant),
             view=mode == MODES[1],
+            min_drones=choice.min_drones,
         )
         process, run_dir = runner.launch(request, runner.runs_root())
         st.session_state[_ACTIVE] = {
@@ -251,8 +271,9 @@ def _scenarios_page() -> None:
     st.caption(
         f"Upload a scenario config and the MJCF scene it uses. The room must "
         f"declare exactly {UPLOAD_DRONES} start positions, every one clear of "
-        "the scene and of the others, so any run of 1–5 drones works. Nothing "
-        "is saved unless it validates, and nothing is ever overwritten."
+        "the scene and of the others, so any drone count that includes every "
+        "drone its own failure schedule names works. Nothing is saved unless "
+        "it validates, and nothing is ever overwritten."
     )
     with st.form("upload", clear_on_submit=False):
         name = st.text_input("Name (lowercase letters, digits, _)", key="upload_name")
