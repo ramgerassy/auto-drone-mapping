@@ -27,6 +27,7 @@ import numpy as np
 from swarm_mapping.coordination.assignment import assign_all, next_cell
 from swarm_mapping.coordination.movement import resolve_moves
 from swarm_mapping.coordination.types import Cell, DroneHealth, DroneState
+from swarm_mapping.mapping.grid import OccupancyGrid
 from swarm_mapping.mapping.mapper import Mapper
 from swarm_mapping.perception.protocols import Sensor
 from swarm_mapping.planning.frontier_strategy import FrontierStrategy
@@ -43,6 +44,10 @@ _LOGGER = logging.getLogger(__name__)
 # not the body width. (Break-even is 0.30/sqrt(2) = 0.21213; the widely-quoted
 # 0.212 sits just *below* it and would be rejected.)
 MIN_SEPARATION_FLOOR = 2.0 * DRONE_HALF_EXTENT * math.sqrt(2.0)
+
+# Log-odds written under a wreck in the planning overlay: well past the 0.6
+# band, so the planner treats it exactly like a confirmed obstacle.
+_WRECK_LOG_ODDS = 2.0
 
 
 class CentralizedMaster:
@@ -159,6 +164,11 @@ class CentralizedMaster:
         self._unrealized: dict[int, int] = {}
 
         grid = mapper.grid
+        # Cells a wreck's body overlaps — the same overlap rule AStarPlanner
+        # uses for inflation. k = 1 at every resolution the scenarios use.
+        self._wreck_radius = (
+            math.ceil(DRONE_HALF_EXTENT / grid.config.resolution + 0.5) - 1
+        )
         # Every guard below is a `<` comparison and every comparison against
         # NaN is False, so without this a NaN would pass all of them — and then
         # `threshold_sq` in resolve_moves is NaN, every `d2 < NaN` is False, and
@@ -430,7 +440,7 @@ class CentralizedMaster:
             d: s for d, s in self._states.items() if s.health is DroneHealth.ACTIVE
         }
         assigned = assign_all(
-            self._mapper.grid,
+            self._planning_grid(),
             frontiers,
             active,
             self._strategy,
@@ -463,6 +473,31 @@ class CentralizedMaster:
                 },
             )
 
+    def _planning_grid(self) -> OccupancyGrid:
+        """The grid to plan on: the map, plus every wreck as an obstacle.
+
+        A failed drone is a physical body the map deliberately does not
+        contain — the teammate filter keeps drones out of it, and the map's
+        accuracy KPI depends on that. So wrecks go into a copy used for
+        planning only; nothing written here reaches the exported map.
+        """
+        grid = self._mapper.grid
+        wrecks = [
+            self._states[d].cell
+            for d in self._ordered_ids
+            if self._states[d].health is not DroneHealth.ACTIVE
+        ]
+        if not wrecks:
+            return grid
+        overlay = OccupancyGrid(grid.config)
+        overlay.log_odds[:] = grid.log_odds
+        k = self._wreck_radius
+        for col, row in wrecks:
+            overlay.log_odds[
+                max(0, row - k) : row + k + 1, max(0, col - k) : col + k + 1
+            ] = _WRECK_LOG_ODDS
+        return overlay
+
     def _update_idle_drones(self) -> None:
         """Send a drone home once it has sat unassigned for long enough.
 
@@ -489,7 +524,7 @@ class CentralizedMaster:
             ):
                 continue
 
-            path = self._planner.plan(self._mapper.grid, state.cell, home)
+            path = self._planner.plan(self._planning_grid(), state.cell, home)
             if path is not None:
                 self._going_home[drone_id] = path[1:]
                 _LOGGER.info(
