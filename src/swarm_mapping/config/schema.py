@@ -150,10 +150,16 @@ class DroneSettings:
         start_positions: One (x, y, z) world position per drone, in order.
             Drone ids are the indices of this sequence.
         altitude: Flight height in metres. Drones stay in one horizontal plane.
+        cruise_speed: Cruise speed in m/s. One tick moves a drone one cell, so
+            this is what gives a tick a duration:
+            `tick_seconds = map.resolution / cruise_speed`. The simulation
+            itself has no clock — `mj_step` is never called — so without
+            this, time-based KPIs have no unit.
     """
 
     start_positions: tuple[tuple[float, float, float], ...]
     altitude: float
+    cruise_speed: float
 
     @property
     def count(self) -> int:
@@ -373,6 +379,15 @@ class ScenarioConfig:
     coordination: CoordinationSettings
     failures: tuple[FailureSettings, ...] = ()
 
+    @property
+    def tick_seconds(self) -> float:
+        """Nominal duration of one tick, in seconds.
+
+        Derived rather than stored, so it can never disagree with the grid
+        resolution or the cruise speed it comes from.
+        """
+        return self.map.resolution / self.drones.cruise_speed
+
 
 def _parse_start_positions(
     section: dict[str, Any],
@@ -549,6 +564,7 @@ def parse_config(raw: Any) -> ScenarioConfig:
         drones=DroneSettings(
             start_positions=start_positions,
             altitude=_number(drones_section, "drones", "altitude"),
+            cruise_speed=_positive(drones_section, "drones", "cruise_speed"),
         ),
         sensor=SensorSettings(
             num_rays=_positive_int(sensor_section, "sensor", "num_rays"),

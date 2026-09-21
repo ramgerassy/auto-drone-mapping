@@ -36,6 +36,7 @@ def valid_config() -> dict[str, Any]:
                 [0.0, 1.2, 1.0],
             ],
             "altitude": 1.0,
+            "cruise_speed": 1.0,
         },
         "sensor": {
             "num_rays": 72,
