@@ -1,0 +1,233 @@
+<!--
+  Loop indoor scenario: 50m x 50m floor plan, 3m walls (open top).
+
+  Coordinate system: the building centre is at (0, 0, 0); the floor spans
+  x/y = -25 to +25, matching large_indoor so mission figures compare directly.
+
+      +25 +-------------------------------------------+
+          | NW-corner |      N-outer       | NE-corner |
+          |-----D-----D--------------------D-----D-----|
+          |     |  +=========================+  |      |
+          |     |  |  NW-core  |  NE-core    |  |      |
+          |  W  |  |     +-----D-----+       |  |   E  |   ring corridor
+          | out D  D-----+  cross    +-------D  D  out  |   (3.2 m, closed)
+          |  er |  |     +-----D-----+       |  |   er  |
+          |     |  |  SW-core  |  SE-core    |  |      |
+          |     |  +=========================+  |      |
+          |-----D-----D--------------------D-----D-----|
+          | SW-corner |      S-outer       | SE-corner |
+      -25 +-------------------------------------------+
+
+  WHY THIS SCENE EXISTS — LOOP CONNECTIVITY.
+
+  large_indoor is a corridor *cross*: one central junction, four quadrants.
+  Measured drone paths there show long-gap revisits (a drone leaves a region
+  and comes back 600-1000 ticks later), about half of them inside the corridor
+  itself. With a single chokepoint that may be forced by the floor plan rather
+  than chosen by the frontier strategy: a drone that explores the north-east
+  and then the south-west *has* to cross the junction twice.
+
+  This scene is the control that separates the two explanations. Every region
+  has at least two genuinely distinct routes to every other, and no single cell
+  disconnects the map:
+
+    * a closed ring corridor runs right around the building, so any two points
+      on it have a clockwise and an anticlockwise route;
+    * two cross-corridors chord the ring through the centre, adding a third
+      and fourth circulation route;
+    * every room has TWO doorways. The four outer side rooms open twice onto
+      the ring; the four corner rooms open onto the two side rooms flanking
+      them (closing an outer loop); the four core rooms open once onto the ring
+      and once onto a cross-corridor.
+
+  If long-gap revisits collapse here, the corridor cross was the bottleneck.
+  If they persist, the frontier strategy is choosing targets badly. A layout
+  that merely rearranged large_indoor's rooms would answer nothing.
+
+  DIMENSIONS ARE NOT ARBITRARY, and follow large_indoor exactly. Feature 4c
+  measured that a gap must clear `2r + 1` cells PLUS one cell of discretization
+  slop: a wall face landing on a cell boundary has its ray hit point attributed
+  to the far cell, so the mapped gap is one cell narrower than the real one. At
+  resolution 0.2 with clearance_radius 0.20 (r = 1) that floor is 4 cells /
+  0.8 m. Doorways here are 6 cells / 1.2 m and corridors 16 cells / 3.2 m, so
+  the scene survives clearance_radius rising to r = 2.
+
+  EVERY WALL FACE LIES ON A 0.2 m LATTICE POINT, which is also a 0.1 m lattice
+  point. A face at a half-cell offset is exactly what turned a 3-cell gap into
+  2 free cells in the 4c measurement. Geometry was generated from exact
+  rational arithmetic (fractions.Fraction) rather than typed, and
+  tests/unit/test_simulation/test_loop_indoor.py re-asserts the lattice
+  invariant against the parsed model.
+
+  Key lines, all on the lattice:
+    perimeter wall      centre +-25.0   (inner face +-24.8)
+    outer ring wall     centre +-16.2   (faces 16.0 / 16.4)
+    inner ring wall     centre +-12.6   (faces 12.4 / 12.8)
+    cross-corridor wall centre +- 1.8   (faces  1.6 /  2.0)
+  giving a ring corridor 16.0 - 12.8 = 3.2 m wide and cross-corridors 3.2 m.
+
+  OBSTACLE HEIGHTS VARY DELIBERATELY. The drone flies at 0.3 m and the sensor
+  has an upward elevation fan, so height is information the 2.5D map records.
+  large_indoor's crates are all 0.8-1.2 m tall, which barely exercises it.
+  Tops here are 0.2, 0.5, 0.9, 1.6, 2.2 and 2.4 m — one below the flight
+  altitude (invisible to an upward fan, and a free negative control), the rest
+  spread up to nearly wall height.
+
+  Box geom sizes are half-extents. Walls are 0.4 m thick (half-extent 0.2).
+
+  Drones are injected programmatically by SimulationEngine —
+  do not define drone bodies here.
+
+  Rendering follows large_indoor.xml: open top (no ceiling geom) so --view
+  looks down into the plan, opaque walls, two directional lights. The
+  rangefinder never casts above the wall tops at this altitude, so omitting a
+  ceiling leaves the produced map identical.
+-->
+<mujoco model="loop_indoor">
+  <option timestep="0.01" gravity="0 0 -9.81"/>
+
+  <!-- Default free-camera framing, as in large_indoor.xml: the passive viewer
+       otherwise opens at floor level. -->
+  <statistic center="0 0 1" extent="45"/>
+  <visual>
+    <headlight ambient="0.5 0.5 0.5" diffuse="0.45 0.45 0.45" specular="0 0 0"/>
+    <global azimuth="130" elevation="-55"/>
+  </visual>
+
+  <worldbody>
+    <!-- Directional lights: no positional falloff, so a 50 m floor has no
+         hotspot. Lights never collide — no effect on ray-casts or the map. -->
+    <light name="key" directional="true" pos="0 0 20" dir="0.2 0.3 -1"
+           diffuse="0.55 0.55 0.55" specular="0 0 0"/>
+    <light name="fill" directional="true" pos="15 15 20" dir="-0.5 -0.5 -1"
+           diffuse="0.35 0.35 0.35" specular="0 0 0"/>
+
+    <!-- Floor -->
+    <geom name="floor" type="plane" size="25 25 0.05"
+          rgba="0.75 0.75 0.78 1.0"/>
+
+    <!-- Perimeter (generated; see the header) -->
+    <geom name="wall_north" type="box" pos="0 25 1.5"
+          size="25 0.2 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="wall_south" type="box" pos="0 -25 1.5"
+          size="25 0.2 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="wall_east" type="box" pos="25 0 1.5"
+          size="0.2 25 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="wall_west" type="box" pos="-25 0 1.5"
+          size="0.2 25 1.5" rgba="0.55 0.58 0.65 1.0"/>
+
+    <!-- Outer ring wall: side rooms outside it, racetrack corridor inside.
+         Doors at x/y = +-8 join each side room to the ring (two each);
+         doors at +-20.6 join each corner room to its two neighbours,
+         which is what closes the outer loop. -->
+    <geom name="ring_n_1" type="box" pos="-23.1 16.2 1.5"
+          size="1.9 0.2 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="ring_n_2" type="box" pos="-14.3 16.2 1.5"
+          size="5.7 0.2 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="ring_n_3" type="box" pos="0 16.2 1.5"
+          size="7.4 0.2 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="ring_n_4" type="box" pos="14.3 16.2 1.5"
+          size="5.7 0.2 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="ring_n_5" type="box" pos="23.1 16.2 1.5"
+          size="1.9 0.2 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="ring_s_1" type="box" pos="-23.1 -16.2 1.5"
+          size="1.9 0.2 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="ring_s_2" type="box" pos="-14.3 -16.2 1.5"
+          size="5.7 0.2 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="ring_s_3" type="box" pos="0 -16.2 1.5"
+          size="7.4 0.2 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="ring_s_4" type="box" pos="14.3 -16.2 1.5"
+          size="5.7 0.2 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="ring_s_5" type="box" pos="23.1 -16.2 1.5"
+          size="1.9 0.2 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="ring_e_1" type="box" pos="16.2 -23.1 1.5"
+          size="0.2 1.9 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="ring_e_2" type="box" pos="16.2 -14.3 1.5"
+          size="0.2 5.7 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="ring_e_3" type="box" pos="16.2 0 1.5"
+          size="0.2 7.4 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="ring_e_4" type="box" pos="16.2 14.3 1.5"
+          size="0.2 5.7 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="ring_e_5" type="box" pos="16.2 23.1 1.5"
+          size="0.2 1.9 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="ring_w_1" type="box" pos="-16.2 -23.1 1.5"
+          size="0.2 1.9 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="ring_w_2" type="box" pos="-16.2 -14.3 1.5"
+          size="0.2 5.7 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="ring_w_3" type="box" pos="-16.2 0 1.5"
+          size="0.2 7.4 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="ring_w_4" type="box" pos="-16.2 14.3 1.5"
+          size="0.2 5.7 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="ring_w_5" type="box" pos="-16.2 23.1 1.5"
+          size="0.2 1.9 1.5" rgba="0.55 0.58 0.65 1.0"/>
+
+    <!-- Inner ring wall: corridor outside it, core rooms inside. The
+         north/south runs carry the cross-corridor mouth plus one door
+         per core room; east/west carry the mouth only. -->
+    <geom name="core_n_1" type="box" pos="-10.3 12.6 1.5"
+          size="2.5 0.2 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="core_n_2" type="box" pos="-4.1 12.6 1.5"
+          size="2.5 0.2 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="core_n_3" type="box" pos="4.1 12.6 1.5"
+          size="2.5 0.2 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="core_n_4" type="box" pos="10.3 12.6 1.5"
+          size="2.5 0.2 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="core_s_1" type="box" pos="-10.3 -12.6 1.5"
+          size="2.5 0.2 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="core_s_2" type="box" pos="-4.1 -12.6 1.5"
+          size="2.5 0.2 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="core_s_3" type="box" pos="4.1 -12.6 1.5"
+          size="2.5 0.2 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="core_s_4" type="box" pos="10.3 -12.6 1.5"
+          size="2.5 0.2 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="core_e_1" type="box" pos="12.6 -7.2 1.5"
+          size="0.2 5.6 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="core_e_2" type="box" pos="12.6 7.2 1.5"
+          size="0.2 5.6 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="core_w_1" type="box" pos="-12.6 -7.2 1.5"
+          size="0.2 5.6 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="core_w_2" type="box" pos="-12.6 7.2 1.5"
+          size="0.2 5.6 1.5" rgba="0.55 0.58 0.65 1.0"/>
+
+    <!-- Cross-corridor walls: the two chords through the centre. -->
+    <geom name="cross_e_1" type="box" pos="1.8 7.3 1.5"
+          size="0.2 5.5 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="cross_e_2" type="box" pos="1.8 -7.3 1.5"
+          size="0.2 5.5 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="cross_w_1" type="box" pos="-1.8 7.3 1.5"
+          size="0.2 5.5 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="cross_w_2" type="box" pos="-1.8 -7.3 1.5"
+          size="0.2 5.5 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="cross_n_1" type="box" pos="4.2 1.8 1.5"
+          size="2.4 0.2 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="cross_n_2" type="box" pos="10.3 1.8 1.5"
+          size="2.5 0.2 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="cross_n_3" type="box" pos="-10.3 1.8 1.5"
+          size="2.5 0.2 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="cross_n_4" type="box" pos="-4.2 1.8 1.5"
+          size="2.4 0.2 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="cross_s_1" type="box" pos="4.2 -1.8 1.5"
+          size="2.4 0.2 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="cross_s_2" type="box" pos="10.3 -1.8 1.5"
+          size="2.5 0.2 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="cross_s_3" type="box" pos="-10.3 -1.8 1.5"
+          size="2.5 0.2 1.5" rgba="0.55 0.58 0.65 1.0"/>
+    <geom name="cross_s_4" type="box" pos="-4.2 -1.8 1.5"
+          size="2.4 0.2 1.5" rgba="0.55 0.58 0.65 1.0"/>
+
+    <!-- Obstacles. Tops at 0.2 / 0.5 / 0.9 / 1.6 / 2.2 / 2.4 m; see the
+         header on why the spread matters at a 0.3 m flight altitude. -->
+    <geom name="pallet_n" type="box" pos="-8 20.4 0.1"
+          size="1.2 1 0.1" rgba="0.8 0.4 0.2 1.0"/>
+    <geom name="crate_e" type="box" pos="20.4 8 0.25"
+          size="1 1 0.25" rgba="0.8 0.4 0.2 1.0"/>
+    <geom name="crate_s" type="box" pos="-6 -20.4 0.45"
+          size="1.2 0.8 0.45" rgba="0.8 0.4 0.2 1.0"/>
+    <geom name="shelf_w" type="box" pos="-20.4 -8 0.8"
+          size="0.8 1.6 0.8" rgba="0.8 0.4 0.2 1.0"/>
+    <geom name="pillar_ne" type="box" pos="10 4 1.1"
+          size="0.8 0.8 1.1" rgba="0.8 0.4 0.2 1.0"/>
+    <geom name="pillar_sw" type="box" pos="-10 -4 1.2"
+          size="0.8 0.8 1.2" rgba="0.8 0.4 0.2 1.0"/>
+  </worldbody>
+</mujoco>
