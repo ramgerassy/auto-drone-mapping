@@ -45,7 +45,7 @@ One JSON object per line, in emission order:
 {"event": "mission_blocked", "tick": 212, "level": "WARNING", "unreachable_frontiers": 3}
 ```
 
-- `event` is `record.getMessage()`; `tick` is the call site's own `tick` extra if it passed one, otherwise the loop's current tick (0 before the first tick, the tick being executed during it); `level` is the level name; every other `extra=` field follows. Standard `LogRecord` attributes are excluded — several (`process`, `pathname`, `created`) are machine- or time-specific and would break byte-identical logs.
+- `event` is `record.getMessage()`; `tick` is the call site's own `tick` extra if it passed one, otherwise `master.tick_count` when the line was emitted — ticks completed so far (0 before and during the first tick); `level` is the level name; every other `extra=` field follows. Standard `LogRecord` attributes are excluded — several (`process`, `pathname`, `created`) are machine- or time-specific and would break byte-identical logs.
 - Captures the `swarm_mapping` logger tree at INFO and above, regardless of `--verbose`. Third-party loggers are not captured.
 - Values JSON cannot encode become JSON-native where possible (numpy scalars via `.item()`), else `str()`. A log call never crashes a mission.
 
@@ -101,7 +101,7 @@ One JSON object per line, in emission order:
 | --- | --- | --- |
 | 1 | own directory, two runs never share | `TestEveryRunIsRecorded` |
 | 2 | `run.json` reproduces the run | `TestRunJson::test_the_record_reproduces_the_map` (+ inputs tests) |
-| 3 | every log line JSON with `event`/`tick` | `TestJsonLinesLog`, `TestLogFile`. The failure-event half needs Features 9/10's events and is asserted where those land. |
+| 3 | every log line JSON with `event`/`tick`; failure events appear | `TestJsonLinesLog`, `TestLogFile` (incl. `test_an_injected_failure_reaches_the_log` for Feature 9's `failure_injected`). `drone_failed` is Feature 10's event and is asserted where it lands. |
 | 4 | `list_runs` newest-first, skips and names broken runs | `TestListRuns` |
 | 5 | replaced by R8 | `TestViewIsViewOnly` |
 | 6 | shipped scenarios validate clean | `TestShippedScenarios` |
@@ -176,6 +176,7 @@ class TestJsonLinesLog:
     def test_each_line_is_an_object_with_event_tick_and_level(
         self, tmp_path: Path
     ) -> None:
+        """The three fixed keys, and nothing else for a bare call."""
         log_path = tmp_path / LOG_FILE
         with capture_run_log(log_path) as run_log:
             run_log.tick = 7
@@ -196,8 +197,11 @@ class TestJsonLinesLog:
         assert line["cell"] == [3, 4]
 
     def test_standard_record_attributes_are_not_leaked(self, tmp_path: Path) -> None:
-        """`lineno`, `pathname`, `process`... are noise, and some are
-        machine-specific — they would make two identical runs' logs differ."""
+        """`lineno`, `pathname`, `process` and the like are left out.
+
+        They are noise, and some are machine- or time-specific: they would make
+        two identical runs' logs differ.
+        """
         log_path = tmp_path / LOG_FILE
         with capture_run_log(log_path):
             LOGGER.info("plain")
@@ -208,8 +212,7 @@ class TestJsonLinesLog:
     def test_every_line_has_a_tick_even_when_the_call_site_gave_none(
         self, tmp_path: Path
     ) -> None:
-        """The filter stamps the loop's current tick; before the first tick it
-        is 0."""
+        """The filter stamps the loop's current tick; before the first it is 0."""
         log_path = tmp_path / LOG_FILE
         with capture_run_log(log_path) as run_log:
             LOGGER.info("starting")
@@ -219,8 +222,7 @@ class TestJsonLinesLog:
         assert [line["tick"] for line in read_lines(log_path)] == [0, 1]
 
     def test_a_call_site_tick_is_kept(self, tmp_path: Path) -> None:
-        """The master already passes `tick` on some events; it is not
-        overwritten."""
+        """The master already passes `tick` on some events; it is not replaced."""
         log_path = tmp_path / LOG_FILE
         with capture_run_log(log_path) as run_log:
             run_log.tick = 9
@@ -257,8 +259,11 @@ class TestJsonLinesLog:
     def test_info_is_captured_even_when_the_logger_is_quieter(
         self, tmp_path: Path
     ) -> None:
-        """The file log is complete regardless of `--verbose`; the logger's own
-        level is restored afterwards so stderr is unaffected."""
+        """The file log is complete regardless of `--verbose`.
+
+        The logger's own level is restored afterwards, so what reaches stderr
+        after the run is exactly what reached it before.
+        """
         package = logging.getLogger("swarm_mapping")
         previous = package.level
         package.setLevel(logging.WARNING)
@@ -275,6 +280,7 @@ class TestJsonLinesLog:
         ]
 
     def test_loggers_outside_the_package_are_not_captured(self, tmp_path: Path) -> None:
+        """Third-party chatter (matplotlib, MuJoCo) is not the run's log."""
         log_path = tmp_path / LOG_FILE
         with capture_run_log(log_path):
             logging.getLogger("matplotlib.font_manager").warning("third party")
@@ -282,6 +288,7 @@ class TestJsonLinesLog:
         assert read_lines(log_path) == []
 
     def test_the_handler_is_detached_afterwards(self, tmp_path: Path) -> None:
+        """A later run, or a test, never writes into this run's log."""
         package = logging.getLogger("swarm_mapping")
         handlers_before = list(package.handlers)
         log_path = tmp_path / LOG_FILE
@@ -293,6 +300,7 @@ class TestJsonLinesLog:
         assert package.handlers == handlers_before
 
     def test_the_handler_is_detached_on_an_exception_too(self, tmp_path: Path) -> None:
+        """A crashed run releases the file and the logger just the same."""
         package = logging.getLogger("swarm_mapping")
         handlers_before = list(package.handlers)
         log_path = tmp_path / LOG_FILE
@@ -314,6 +322,7 @@ class TestJsonLinesLog:
         assert len(read_lines(log_path)) == 1
 
     def test_event_counts_tally_lines_per_event(self, tmp_path: Path) -> None:
+        """`event_counts` is what run.json reports; keys sorted for stability."""
         with capture_run_log(tmp_path / LOG_FILE) as run_log:
             LOGGER.info("b")
             LOGGER.info("a")
@@ -321,7 +330,7 @@ class TestJsonLinesLog:
             counts = run_log.event_counts()
 
         assert counts == {"a": 1, "b": 2}
-        assert list(counts) == ["a", "b"], "keys sorted, for a stable run.json"
+        assert list(counts) == ["a", "b"]
 ```
 
 - [ ] **Step 2: Run to verify they fail**
@@ -364,9 +373,10 @@ git commit -m "feat(records): JSON Lines run log with a per-tick stamp"
 
 ```python
 class TestVariants:
-    """The allocation variants, labelled as the sprint plan's table."""
+    """The allocation variants, labelled as in the sprint plan's table."""
 
     def test_the_table_is_exactly_the_sprint_plan(self) -> None:
+        """The four labels are these four (assignment, tolerance) pairs."""
         assert VARIANTS == {
             "baseline": ("greedy", 0),
             "A": ("global", 0),
@@ -378,10 +388,12 @@ class TestVariants:
     def test_each_pair_maps_to_its_label(
         self, label: str, pair: tuple[str, int]
     ) -> None:
+        """Each of the four pairs reads back as its label."""
         assert variant_label(*pair) == label
 
     @pytest.mark.parametrize("pair", [("greedy", 1), ("global", 5)])
     def test_anything_else_is_custom(self, pair: tuple[str, int]) -> None:
+        """A tolerance off the table is not silently rounded to a variant."""
         assert variant_label(*pair) == "custom"
 
 
@@ -417,6 +429,7 @@ class TestRunRecordFile:
     """`run.json` round-trips through `write_run_record` / `load_run`."""
 
     def test_round_trip(self, tmp_path: Path) -> None:
+        """What is written is what is read, plus where it was read from."""
         record = make_record()
         write_run_record(tmp_path, record)
 
@@ -427,6 +440,7 @@ class TestRunRecordFile:
         assert loaded.directory == tmp_path
 
     def test_file_carries_the_schema_version(self, tmp_path: Path) -> None:
+        """Four top-level keys, versioned, so a reader can refuse a future one."""
         write_run_record(tmp_path, make_record())
 
         data = json.loads((tmp_path / RUN_FILE).read_text())
@@ -434,13 +448,17 @@ class TestRunRecordFile:
         assert set(data) == {"schema_version", "started_at", "inputs", "outputs"}
 
     def test_writing_leaves_no_temporary_file(self, tmp_path: Path) -> None:
-        """The write is replace-on-complete, so a reader never sees half a
-        file — and nothing else is left in the run directory."""
+        """The write is replace-on-complete and leaves nothing else behind.
+
+        A reader never sees half a file, and the run directory holds only what
+        the run produced.
+        """
         write_run_record(tmp_path, make_record())
 
         assert sorted(p.name for p in tmp_path.iterdir()) == [RUN_FILE]
 
     def test_a_missing_file_is_a_run_record_error(self, tmp_path: Path) -> None:
+        """A directory without run.json is reported, naming the file."""
         with pytest.raises(RunRecordError, match=RUN_FILE):
             load_run(tmp_path)
 
@@ -465,6 +483,7 @@ class TestRunRecordFile:
     def test_a_malformed_file_is_a_run_record_error(
         self, tmp_path: Path, content: str
     ) -> None:
+        """Every way a file can be wrong surfaces as one exception type."""
         (tmp_path / RUN_FILE).write_text(content)
 
         with pytest.raises(RunRecordError):
@@ -475,11 +494,13 @@ class TestListRuns:
     """Test case 4: history newest-first; broken runs skipped, and named."""
 
     def write_run(self, root: Path, name: str, started_at: str) -> None:
+        """Write a valid record into `root/name`."""
         directory = root / name
         directory.mkdir()
         write_run_record(directory, make_record(started_at))
 
     def test_newest_first(self, tmp_path: Path) -> None:
+        """Ordered by start time, not by name or by filesystem order."""
         self.write_run(tmp_path, "a", "2026-09-21T09:00:00.000000+00:00")
         self.write_run(tmp_path, "b", "2026-09-21T11:00:00.000000+00:00")
         self.write_run(tmp_path, "c", "2026-09-21T10:00:00.000000+00:00")
@@ -493,6 +514,7 @@ class TestListRuns:
         assert listing.skipped == []
 
     def test_ties_break_by_directory_name(self, tmp_path: Path) -> None:
+        """Equal timestamps still give one deterministic order."""
         same = "2026-09-21T10:00:00.000000+00:00"
         for name in ("run_b", "run_a", "run_c"):
             self.write_run(tmp_path, name, same)
@@ -501,8 +523,11 @@ class TestListRuns:
         assert names == ["run_a", "run_b", "run_c"]
 
     def test_broken_runs_are_skipped_and_named(self, tmp_path: Path) -> None:
-        """The history page must render with a crashed or half-written run in
-        the folder — and say which ones it could not show."""
+        """A crashed or half-written run neither breaks the listing nor hides.
+
+        The history page must render with one in the folder, and say which runs
+        it could not show.
+        """
         self.write_run(tmp_path, "good", "2026-09-21T10:00:00.000000+00:00")
         (tmp_path / "corrupt").mkdir()
         (tmp_path / "corrupt" / RUN_FILE).write_text("{truncated")
@@ -516,6 +541,7 @@ class TestListRuns:
         assert reasons["corrupt"]
 
     def test_plain_files_in_the_root_are_ignored(self, tmp_path: Path) -> None:
+        """Only directories are runs; a stray file is neither run nor skip."""
         (tmp_path / "notes.txt").write_text("hello")
 
         listing = list_runs(tmp_path)
@@ -663,6 +689,7 @@ class TestEveryRunIsRecorded:
     def test_both_files_are_written(
         self, two_drone_run: tuple[Path, Path, MissionResult]
     ) -> None:
+        """run.json and log.jsonl land in `--output`."""
         _, output, _ = two_drone_run
         assert (output / RUN_FILE).is_file()
         assert (output / LOG_FILE).is_file()
@@ -670,6 +697,7 @@ class TestEveryRunIsRecorded:
     def test_files_lists_exactly_what_the_run_wrote(
         self, two_drone_run: tuple[Path, Path, MissionResult]
     ) -> None:
+        """`files` names every file in the run directory, and only those."""
         _, output, _ = two_drone_run
         listed = run_json(output)["outputs"]["files"]
         assert listed == sorted(p.name for p in output.iterdir())
@@ -677,6 +705,7 @@ class TestEveryRunIsRecorded:
     def test_a_second_run_leaves_the_first_record_untouched(
         self, two_drone_run: tuple[Path, Path, MissionResult], tmp_path: Path
     ) -> None:
+        """Runs in different directories never touch each other's records."""
         config, first, _ = two_drone_run
         before = (first / RUN_FILE).read_bytes(), (first / LOG_FILE).read_bytes()
 
@@ -689,8 +718,10 @@ class TestEveryRunIsRecorded:
     def test_rerunning_into_the_same_directory_replaces_the_log(
         self, tmp_path: Path
     ) -> None:
-        """`--output` keeps its meaning (R1): same DIR, files replaced — and the
-        log is replaced too, never spliced onto the previous run's."""
+        """Same `--output` twice: files are replaced, as they always were (R1).
+
+        The log is replaced too, never spliced onto the previous run's.
+        """
         config = capped_config(tmp_path, max_ticks=5)
         output = tmp_path / "run"
         run_pipeline(config, output, drones=1)
@@ -706,6 +737,7 @@ class TestRunJson:
     def test_outcome_matches_the_mission_result(
         self, two_drone_run: tuple[Path, Path, MissionResult]
     ) -> None:
+        """The outputs are the MissionResult the caller received."""
         _, output, result = two_drone_run
         outputs = run_json(output)["outputs"]
 
@@ -720,6 +752,7 @@ class TestRunJson:
     def test_inputs_record_what_was_run(
         self, two_drone_run: tuple[Path, Path, MissionResult]
     ) -> None:
+        """Config path, snapshot, swarm size, allocation and variant."""
         config, output, _ = two_drone_run
         inputs = run_json(output)["inputs"]
 
@@ -733,8 +766,10 @@ class TestRunJson:
         assert inputs["config"] == json.loads(json.dumps(asdict(load_config(config))))
 
     def test_overrides_are_in_the_record_and_the_snapshot(self, tmp_path: Path) -> None:
-        """A CLI override is part of the run; the snapshot is the config *as
-        run*, not as written in the file."""
+        """A CLI override is part of the run.
+
+        The snapshot is the config *as run*, not as written in the file.
+        """
         output = tmp_path / "run"
         run_pipeline(
             capped_config(tmp_path, max_ticks=5),
@@ -752,6 +787,7 @@ class TestRunJson:
     def test_per_drone_path_stats(
         self, two_drone_run: tuple[Path, Path, MissionResult]
     ) -> None:
+        """One PathLog summary per drone flown."""
         _, output, result = two_drone_run
         paths = run_json(output)["outputs"]["paths"]
 
@@ -763,6 +799,7 @@ class TestRunJson:
     def test_event_counts_match_the_log(
         self, two_drone_run: tuple[Path, Path, MissionResult]
     ) -> None:
+        """`event_counts` agrees with the log file it summarises."""
         _, output, _ = two_drone_run
         counted = collections.Counter(line["event"] for line in read_log(output))
 
@@ -771,8 +808,10 @@ class TestRunJson:
     def test_the_record_reproduces_the_map(
         self, two_drone_run: tuple[Path, Path, MissionResult], tmp_path: Path
     ) -> None:
-        """Enough is recorded to re-run from run.json alone — config snapshot
-        plus drone count — and get a byte-identical map."""
+        """Re-running from run.json alone gives a byte-identical map.
+
+        The config snapshot plus the drone count is the whole recipe.
+        """
         _, output, _ = two_drone_run
         inputs = run_json(output)["inputs"]
 
@@ -787,15 +826,16 @@ class TestRunJson:
 
 
 class TestLogFile:
-    """Test case 3 (generic half): every line is JSON with `event` and `tick`.
+    """Test case 3: every line is JSON with `event` and `tick`.
 
-    The failure half — `failure_injected` / `drone_failed` appear in a failure
-    run — needs Features 9 and 10's events and is checked where they land.
+    Of the failure half, `failure_injected` (Feature 9) is checked here;
+    `drone_failed` is Feature 10's and is checked where it lands.
     """
 
     def test_every_line_has_event_and_tick(
         self, two_drone_run: tuple[Path, Path, MissionResult]
     ) -> None:
+        """No line is missing either key, whatever its call site passed."""
         _, output, _ = two_drone_run
         lines = read_log(output)
 
@@ -807,6 +847,7 @@ class TestLogFile:
     def test_ticks_follow_the_mission(
         self, two_drone_run: tuple[Path, Path, MissionResult]
     ) -> None:
+        """Ticks never go backwards and match the loop that logged them."""
         _, output, result = two_drone_run
         ticks = [line["tick"] for line in read_log(output)]
 
@@ -844,9 +885,45 @@ class TestLogFile:
             if line["event"] == "mission_blocked"
         ]
         assert blocked
-        assert blocked[-1]["tick"] == result.ticks
+        # The master logs this during its final tick, before counting it done:
+        # `tick` is ticks completed when the line was written.
+        assert blocked[-1]["tick"] == result.ticks - 1
         assert blocked[-1]["unreachable_frontiers"] == result.unreachable_frontiers
         assert blocked[-1]["level"] == "WARNING"
+
+    def test_an_injected_failure_reaches_the_log(self, tmp_path: Path) -> None:
+        """Test case 3, failure half: `failure_injected` is in a failure run.
+
+        The event is Feature 9's; this checks only that the run log records it
+        on the right tick and counts it. `drone_failed` is Feature 10's
+        detection event and is asserted where it lands.
+        """
+        raw: dict[str, Any] = yaml.safe_load(SMALL_INDOOR.read_text())
+        raw["coordination"]["max_ticks"] = 10
+        raw["failures"] = [{"drone": 1, "tick": 5, "mode": "silent"}]
+        config = tmp_path / "failure.yaml"
+        config.write_text(yaml.safe_dump(raw))
+        output = tmp_path / "run"
+
+        run_pipeline(config, output, drones=2)
+
+        injected = [
+            line for line in read_log(output) if line["event"] == "failure_injected"
+        ]
+        assert injected == [
+            {
+                "event": "failure_injected",
+                "tick": 5,
+                "level": "INFO",
+                "drone_id": 1,
+                "mode": "silent",
+            }
+        ]
+        record = run_json(output)
+        assert record["outputs"]["event_counts"]["failure_injected"] == 1
+        assert record["inputs"]["config"]["failures"] == [
+            {"drone_id": 1, "tick": 5, "mode": "silent"}
+        ]
 
 
 class TestPathsAlwaysRecorded:
@@ -855,6 +932,7 @@ class TestPathsAlwaysRecorded:
     def test_written_without_any_flag(
         self, two_drone_run: tuple[Path, Path, MissionResult]
     ) -> None:
+        """A plain run writes its paths; heatmaps still need their flag."""
         _, output, _ = two_drone_run
         assert (output / "paths.json").is_file()
         assert (output / "route_drone_0.png").is_file()
@@ -864,6 +942,7 @@ class TestPathsAlwaysRecorded:
         )
 
     def test_heatmaps_still_come_with_their_flag(self, tmp_path: Path) -> None:
+        """`--visit-heatmaps` adds the heatmaps and they are listed in files."""
         output = tmp_path / "run"
         run_pipeline(
             capped_config(tmp_path, max_ticks=5),
@@ -887,6 +966,7 @@ class TestViewIsViewOnly:
     def test_two_headless_runs_have_identical_records(
         self, two_drone_run: tuple[Path, Path, MissionResult], tmp_path: Path
     ) -> None:
+        """Same inputs, same record and same log, bar the wall clock."""
         config, first, _ = two_drone_run
         second = tmp_path / "again"
         run_pipeline(config, second, drones=2)
@@ -899,6 +979,7 @@ class TestViewIsViewOnly:
     def test_view_is_the_only_input_it_changes(
         self, two_drone_run: tuple[Path, Path, MissionResult]
     ) -> None:
+        """Recording `view=True` changes `view` and nothing else."""
         config, _, _ = two_drone_run
         scenario = load_config(config)
 
@@ -913,6 +994,7 @@ class TestStderrIsUnchanged:
     """The file log captures INFO; the terminal still shows only what it did."""
 
     def test_quiet_cli_prints_no_info_but_logs_it(self, tmp_path: Path) -> None:
+        """Without --verbose, INFO reaches log.jsonl but not the terminal."""
         config = capped_config(tmp_path, max_ticks=3)
         output = tmp_path / "run"
 
@@ -963,8 +1045,8 @@ Expected: `ImportError: cannot import name 'describe_inputs'`.
 
 - [ ] **Step 3: Implement**
 
-1. `run_pipeline`: record `started_at` (UTC) and a monotonic start; `output_dir.mkdir(parents=True, exist_ok=True)` moves to the top; the whole body runs inside `with capture_run_log(output_dir / LOG_FILE) as run_log:`.
-2. The loop sets `run_log.tick = master.tick_count + 1` before each `master.tick()` — the master increments its counter first thing in `tick()`, so this is the tick being executed and agrees with the `tick` extras the master already passes.
+1. `run_pipeline`: record `started_at` (UTC) and a monotonic start; `output_dir.mkdir(parents=True, exist_ok=True)` moves to the top; then, inside `with capture_run_log(output_dir / LOG_FILE) as run_log:`, delegate to a private `_run_recorded(...)` holding the old body at its original indentation (so Feature 9's `mission.tick()` loop line merges untouched).
+2. The loop sets `run_log.tick = master.tick_count` right after each `master.tick()`. The master increments its counter at the *end* of `tick()` (after sense/assign/move), and the events that carry their own `tick` pass that counter — so a line's tick is "ticks completed when it was written", stamped and passed alike. Also: `cli`'s logger is named `"swarm_mapping.cli"` explicitly, because under `python -m swarm_mapping.cli` `__name__` is `"__main__"` — outside the captured tree.
 3. `PathLog()` unconditionally; `paths.json` and `route_drone_<id>.png` for every drone. Heatmaps, and every existing `print`, stay behind `--visit-heatmaps` so stdout is unchanged.
 4. After export and before the post-mission viewer wait: `write_run_record(output_dir, RunRecord(started_at, describe_inputs(...), RunOutputs(...)))`. `files` is the sorted list of names this run wrote, including `log.jsonl` and `run.json`.
 5. `main`: build the stderr `StreamHandler` explicitly with `setLevel(INFO if verbose else WARNING)` and pass it to `basicConfig(handlers=[...])`. Same format, same output — but the level now lives on the handler, so the file log lowering the package logger's level cannot leak INFO to the terminal.
@@ -1042,16 +1124,17 @@ class TestShippedScenarios:
     """Test case 6: every shipped scenario validates clean."""
 
     def test_there_are_shipped_scenarios(self) -> None:
+        """Guards the parametrisation below against an empty glob."""
         assert len(SHIPPED) >= 4
 
     @pytest.mark.parametrize("name", SHIPPED)
     def test_validates_clean(self, name: str) -> None:
+        """No problems under the default rules."""
         assert validate_scenario(SCENARIOS / name / "config.yaml") == []
 
     @pytest.mark.parametrize("name", ["large_indoor", "loop_indoor"])
     def test_five_spawn_scenarios_meet_the_upload_rule(self, name: str) -> None:
-        """The two shipped scenarios that declare five spawns would be accepted
-        as uploads too."""
+        """The shipped five-spawn scenarios would be accepted as uploads too."""
         path = SCENARIOS / name / "config.yaml"
         assert validate_scenario(path, require_five=True) == []
 
@@ -1060,6 +1143,7 @@ class TestSpawnCount:
     """Test case 7: "up to 5 drones" means five usable start positions."""
 
     def test_fewer_than_five_is_rejected_with_the_count(self) -> None:
+        """small_indoor declares three; the message says three of five."""
         problems = validate_scenario(
             SCENARIOS / "small_indoor" / "config.yaml", require_five=True
         )
@@ -1073,6 +1157,7 @@ class TestSpawnInsideGeometry:
     """Test case 8: a spawn inside a wall is named by index."""
 
     def test_spawn_in_a_wall_is_rejected_by_index(self, tmp_path: Path) -> None:
+        """The problem names the spawn index and the geom it is inside."""
         raw = scenario_dict("small_indoor")
         # small_indoor's east wall is centred on x = 10 with 0.1 m half-width.
         raw["drones"]["start_positions"][1] = [9.95, 0.0, 1.0]
@@ -1084,9 +1169,12 @@ class TestSpawnInsideGeometry:
         assert "wall_east" in problems[0]
 
     def test_geometry_is_checked_on_the_compiled_scene(self, tmp_path: Path) -> None:
-        """The obstacle's position comes from its parent body's frame, so only
-        the compiled model knows where it is — reading the geom's own `pos`
-        attribute would put it at the origin and miss the spawn entirely."""
+        """The obstacle is found where MuJoCo compiles it, not where XML says.
+
+        Its position comes from its parent body's frame, so reading the
+        geom's own `pos` attribute would put it at the origin and miss the
+        spawn entirely.
+        """
         scene = tmp_path / "pillar.xml"
         scene.write_text(PILLAR_SCENE)
         raw = scenario_dict("small_indoor")
@@ -1104,6 +1192,7 @@ class TestSpawnInsideGeometry:
         assert "pillar" in problems[0]
 
     def test_every_offending_spawn_is_reported(self, tmp_path: Path) -> None:
+        """All bad spawns are listed at once, and good ones are not."""
         raw = scenario_dict("small_indoor")
         raw["drones"]["start_positions"][0] = [9.95, 0.0, 1.0]
         raw["drones"]["start_positions"][2] = [-9.95, 0.0, 1.0]
@@ -1120,6 +1209,7 @@ class TestSpawnSeparation:
     """Test case 9: two spawns closer than `min_separation` are rejected."""
 
     def test_spawns_too_close_are_rejected(self, tmp_path: Path) -> None:
+        """0.3 m apart against a 0.5 m min_separation."""
         raw = scenario_dict("small_indoor")
         raw["drones"]["start_positions"][1] = [0.0, 0.3, 1.0]  # sep 0.5 m
 
@@ -1135,6 +1225,8 @@ class TestMissingScene:
     def test_missing_scene_is_rejected_first(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """One problem naming the scene, and no simulator ever built."""
+
         def tripwire(*_args: object, **_kwargs: object) -> None:
             pytest.fail("the validator built a simulation for a missing scene")
 
@@ -1154,6 +1246,7 @@ class TestNeverRaises:
     """R7: bad input is a list of problems, never an exception."""
 
     def test_missing_config_file(self, tmp_path: Path) -> None:
+        """A path that does not exist is a problem."""
         problems = validate_scenario(tmp_path / "absent.yaml")
         assert len(problems) == 1
         assert "absent.yaml" in problems[0]
@@ -1162,11 +1255,13 @@ class TestNeverRaises:
         "text", ["key: [unclosed", "- just\n- a list\n", ""], ids=str
     )
     def test_unparseable_config(self, tmp_path: Path, text: str) -> None:
+        """Broken YAML, a list, or an empty file."""
         path = tmp_path / "config.yaml"
         path.write_text(text)
         assert len(validate_scenario(path)) == 1
 
     def test_schema_error_names_the_key(self, tmp_path: Path) -> None:
+        """A `parse_config` error becomes the problem, key and all."""
         raw = scenario_dict("small_indoor")
         del raw["sensor"]["max_range"]
 
@@ -1174,6 +1269,7 @@ class TestNeverRaises:
         assert "sensor.max_range" in problem
 
     def test_broken_scene_xml(self, tmp_path: Path) -> None:
+        """MuJoCo's compile error becomes a problem."""
         scene = tmp_path / "broken.xml"
         scene.write_text("<mujoco><worldbody><geom type='nonsense'/></worldbody>")
         raw = scenario_dict("small_indoor")
@@ -1236,6 +1332,7 @@ class TestInstallScenario:
 
     @pytest.fixture
     def roots(self, tmp_path: Path) -> tuple[Path, Path]:
+        """Empty stand-ins for the scenarios root and the assets directory."""
         scenarios_root = tmp_path / "scenarios"
         assets_dir = tmp_path / "assets"
         scenarios_root.mkdir()
@@ -1251,9 +1348,11 @@ class TestInstallScenario:
 
     @staticmethod
     def everything_under(*roots: Path) -> list[Path]:
+        """Every file and directory below the given roots, sorted."""
         return sorted(p for root in roots for p in root.rglob("*"))
 
     def test_a_valid_room_is_installed(self, roots: tuple[Path, Path]) -> None:
+        """Scene into assets, config into its own directory, path rewritten."""
         scenarios_root, assets_dir = roots
         config_text, scene_text = self.upload()
 
@@ -1278,6 +1377,7 @@ class TestInstallScenario:
     def test_bad_names_are_rejected_and_nothing_written(
         self, roots: tuple[Path, Path], name: str
     ) -> None:
+        """Anything off the name pattern, including `../`, writes nothing."""
         config_text, scene_text = self.upload()
 
         problems = install_scenario(name, config_text, scene_text, *roots)
@@ -1288,6 +1388,7 @@ class TestInstallScenario:
     def test_an_existing_scenario_is_never_overwritten(
         self, roots: tuple[Path, Path]
     ) -> None:
+        """A name taken by a scenario directory is refused, files untouched."""
         scenarios_root, assets_dir = roots
         existing = scenarios_root / "small_indoor"
         existing.mkdir()
@@ -1305,6 +1406,7 @@ class TestInstallScenario:
     def test_an_existing_scene_file_is_never_overwritten(
         self, roots: tuple[Path, Path]
     ) -> None:
+        """A name taken by a scene file is refused, files untouched."""
         scenarios_root, assets_dir = roots
         (assets_dir / "my_room.xml").write_text("shipped scene")
         config_text, scene_text = self.upload()
@@ -1318,8 +1420,7 @@ class TestInstallScenario:
         assert list(scenarios_root.iterdir()) == []
 
     def test_an_invalid_room_writes_nothing(self, roots: tuple[Path, Path]) -> None:
-        """Three spawns fails the upload rule; the problem says so and the
-        roots stay empty."""
+        """Three spawns fails the upload rule, and the roots stay empty."""
         config_text, scene_text = self.upload("small_indoor")
 
         problems = install_scenario("my_room", config_text, scene_text, *roots)
@@ -1331,6 +1432,7 @@ class TestInstallScenario:
     def test_an_unparseable_config_writes_nothing(
         self, roots: tuple[Path, Path]
     ) -> None:
+        """Broken YAML is a problem, not an exception, and writes nothing."""
         _, scene_text = self.upload()
 
         problems = install_scenario("my_room", "key: [unclosed", scene_text, *roots)
@@ -1347,8 +1449,8 @@ Expected: `ImportError: cannot import name 'install_scenario'`.
 
 1. Name fails `SCENARIO_NAME.fullmatch` → problem, stop. (The pattern admits no `/` or `.`, so `../` is rejected here.)
 2. `scenarios_root/<name>` or `assets_dir/<name>.xml` exists → "already exists" problem(s), stop.
-3. `yaml.safe_load(config_text)`: a YAML error, a non-mapping, or a missing/non-mapping `scene` section → problem, stop.
-4. In a `TemporaryDirectory`: write the scene, set `scene.path` to its absolute path, write the config, `validate_scenario(..., require_five=True)`. Any problem → return them; nothing outside the temp dir was written.
+3. `yaml.safe_load(config_text)` far enough to rewrite `scene.path`. If it is not YAML, not a mapping, or has no `scene` mapping, the text is staged as uploaded and the validator reports why — in the same words it uses for a file on disk.
+4. In a `TemporaryDirectory`: write the scene, set `scene.path` to its absolute path, write the config, `validate_scenario(..., require_five=True)`. Any problem → return them, with the staging path replaced by `<upload>`; nothing outside the temp dir was written.
 5. Write the scene with mode `"x"` (exclusive create — never overwrite, even in a race), `mkdir(exist_ok=False)` the scenario directory, write `config.yaml` with `scene.path: <name>.xml` via `yaml.safe_dump(sort_keys=False)`.
 
 - [ ] **Step 4: Run to verify they pass** — then the full pre-commit check.
