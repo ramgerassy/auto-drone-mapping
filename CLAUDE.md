@@ -48,19 +48,31 @@ Seven modules with one-way dependencies. Each module has a defined responsibilit
 Always one-way. Anything below depends only on things further down, never up:
 
 ```
+app (operator console + scenario validation; nothing imports it)
+    ├── cli (validation reuses build_mission; runs launch the CLI as a subprocess)
+    ├── records (reads run history)
+    ├── config
+    └── simulation (spawn contact check)
+cli (composition root)
+    ├── records
+    └── every domain module below
 coordination
     ├── planning
-    └── simulation (for poses and commands)
+    ├── mapping (holds the Mapper)
+    ├── perception (calls Sensor.scan)
+    └── simulation (for poses, heartbeats and commands)
 planning
     └── mapping (read-only)
-perception
-    ├── simulation (for ray-casts)
-    └── mapping (writes observations)
 mapping
+    └── perception (types only: ScanResult / RayObservation)
+perception
+    └── simulation (for ray-casts and poses)
+simulation
     └── (no dependencies on other domain modules)
 visualization
-    ├── mapping (read-only)
-    └── coordination (read-only)
+    └── (no domain modules; wraps MuJoCo's model/data directly)
+records
+    └── (no dependencies; serialises plain data)
 config
     └── (no dependencies; everyone reads it at startup)
 ```
