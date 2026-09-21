@@ -948,25 +948,32 @@ warning naming it.
   the push gate would have picked up the acceptance tests, and the sprint's PR
   to `main` would have skipped every earlier test.
 
-The gates now run **both labels on every push**, as separate steps, so a red
-build still says whether shipped behaviour broke or in-flight work is not done:
+The gates now run **both labels on every push**, so a red build still says
+whether shipped behaviour broke or in-flight work is not done. The end state
+(PR #27) is five parallel jobs:
 
-| Gate | Steps |
-| --- | --- |
-| push (any branch) | **Regression** `-m "regression and not acceptance"`, then **Progression** `-m "progression and not acceptance"` (exit code 5, "no tests collected", is accepted so an empty progression set at sprint start passes) |
-| PR → `main` | the same two, with coverage (`--cov`), then **Acceptance** `-m acceptance` |
+| Job | When | Runs |
+| --- | --- | --- |
+| **Lint and types** | every push | `ruff check`, `ruff format --check`, `mypy` |
+| **Regression** | every push | `-m "regression and not acceptance"` |
+| **Progression** | every push | `-m "progression and not acceptance"` (exit code 5, "no tests collected", is accepted so an empty progression set at sprint start passes) |
+| **Coverage** | PRs to `main` | `-m "not acceptance" --cov` — one job over the whole non-acceptance suite, because coverage data cannot be appended across separate runners |
+| **Acceptance** | PRs to `main` | `-m acceptance` |
 
-At the switch the Regression step ran 358 tests. **Coverage is collected only
-on PRs to `main`.** With `--cov` on every push, the push gate measured
-**6 min 9 s** against CLAUDE.md's 5-minute per-commit budget. Without it
-(PR #24), the same 358 regression tests ran in **2 min 42 s**, progression
-(150 tests) in 1 min 39 s, and the whole push job in **4 min 37 s**. That
-margin was thin, and Feature 11 then added a ~54 s integration module. The
-first push after it (run 35653954803, the PR #25 merge into `sprint-3`) took
-**6 min 15 s** from creation to completion: regression 358 tests in 2 min 42 s,
-progression 202 tests in 3 min 13 s. **The push gate is over its 5-minute
-budget again, even without coverage.** No decision on that has been recorded;
-it is listed in §9.
+At the switch the Regression label held 358 tests. Getting the push gate inside
+CLAUDE.md's 5-minute per-commit budget took three steps, and each figure below
+names the run it came from, because different runs measured different trees:
+
+| Configuration | Run | Measured |
+| --- | --- | --- |
+| One job, coverage on every push | `sprint-3` run 35643865761 | regression step **6 min 9 s** |
+| One job, coverage on PRs only (PR #24) | #24's branch run 35652334588 (before Feature 13 merged) | regression 358 tests 2:42, progression 150 tests 1:39, whole job **4:37** |
+| The same, after Feature 11 merged | `sprint-3` run 35653954803 | regression 358 tests 2:42, progression 202 tests 3:13, whole job **6:15** — over budget |
+| Parallel jobs (PR #27) | #27's branch run 35654993679 | lint 0:15, regression job 2:49, progression job 3:27, whole run **3:30** |
+
+The parallel layout is inside the budget with every non-acceptance test still
+running on every push. Progression is now the critical path, so the current
+sprint's tests are what sets the push time.
 
 **The forgotten bump now fails loudly.** It was missed twice, silently. A test
 tagged with a sprint *ahead of* `CURRENT_SPRINT` now raises a
@@ -988,7 +995,7 @@ alone takes ~108 s and the full suite ~113 s against CLAUDE.md's <5 min
 per-commit budget, while a single `large_indoor` 3-drone acceptance run takes
 ~279 s (58 s after Feature 6's fixes — `progress.md`, 2026-09-20). That gap is
 exactly what the `acceptance` marker is for. (Those are Sprint 2 figures; the
-Sprint 3 push-gate times are above.)
+Sprint 3 CI times are above.)
 
 **Pre-commit** runs ruff and ruff-format, basic file checks, and — when Python
 files are staged — `pytest -m "(regression or sanity) and not acceptance"`.
@@ -1190,8 +1197,6 @@ and a `DistributedAuction` would owe the same answer.
   defaults to A+B (`assignment: global`, `target_tolerance_cells: 3`), so the
   seam is bypassed in the default configuration; it selects only when a run
   overrides `--assignment greedy`.
-- **The CI push gate is over its 5-minute budget again** (6 min 15 s after
-  Feature 11, without coverage — §7.1). Open; no decision recorded.
 - **Console UI tests run only locally**, with `uv sync --extra ui` (§7.1).
 - **A browser reload loses the console's handle on a live run.** The process
   handle lives in the Streamlit session; the run still finishes and appears in
@@ -1272,6 +1277,6 @@ Every measured figure in this document is traceable. Sources:
 | Latency 2 ticks / 0.40 s (silent), 3 ticks / 0.60 s (stuck); 894/1289/1369 ticks; t@95% 517/579/579; 97.37% | `benchmarks/failure_recovery.py` → `failure_recovery.json` (Feature 11); `progress.md`, 2026-09-21 |
 | `small_indoor` 498/254/197 ticks unchanged by pose read-back | Feature 10 zero-regression check; `tests/integration/test_zero_regression.py` |
 | 103 of 365 tests per push; 283 stranded; 358 regression at the switch | `sprint-3-plan.md`, Task 0; commit `53fae7b` |
-| CI push gate 6 min 9 s with coverage; 2 min 42 s regression / 4 min 37 s job without; 6 min 15 s after Feature 11 | Sprint 3 GitHub Actions runs before and after PR #24, and run 35653954803 (after PR #25); `progress.md`, 2026-09-21 |
+| CI times 6:09 / 4:37 / 6:15 / 3:30 | GitHub Actions runs 35643865761, 35652334588, 35653954803, 35654993679 (named in §7.1); `progress.md`, 2026-09-21 |
 | Wreck overlay +2.0 log-odds; timeouts 3/3 | `src/swarm_mapping/coordination/master.py`; scenario YAMLs |
 | 11 console `AppTest` tests; 37 other `test_app` tests | Feature 13 report |

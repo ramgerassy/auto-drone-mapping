@@ -1733,14 +1733,28 @@ collection with a message to bump it, which is exactly when a forgotten bump
 first shows. It would have caught this the first time a `sprint(3)` test was
 written.
 
-Running everything had a price: with coverage on, the push gate measured
-**6 min 9 s** against the 5-minute budget. Decided: coverage is collected only
-on PRs to `main`; pushes run Regression and Progression without `--cov`
-(PR #24). Measured after that change: the 358 regression tests in 2 min 42 s
-instead of 6 min 9 s, and the whole push job in 4 min 37 s. The margin did not
-last. Feature 11 added a ~54 s integration module, and the first push after it
-merged took **6 min 15 s**, progression alone 3 min 13 s. The push gate is over
-budget again without coverage, and that is open.
+Running everything had a price, and fixing it took three tries. Each figure
+names its run, because different runs measured different trees:
+
+```
+configuration                         run                         measured
+one job, coverage on every push       sprint-3 35643865761        regression step 6:09
+one job, coverage on PRs only (#24)   #24 branch 35652334588      regression 358 in 2:42,
+                                      (before Feature 13 merged)  progression 150 in 1:39, job 4:37
+same, after Feature 11 merged         sprint-3 35653954803        regression 358 in 2:42,
+                                                                  progression 202 in 3:13, job 6:15
+parallel jobs (#27)                   #27 branch 35654993679      lint 0:15, regression 2:49,
+                                                                  progression 3:27, run 3:30
+```
+
+Moving coverage to PRs (#24) got inside the 5-minute budget, and the margin
+lasted one feature: Feature 11's ~54 s integration module pushed it back over.
+The user decided to split the push gate into parallel jobs (#27): Lint and
+types, Regression and Progression on every push, with Coverage (one job over
+the whole non-acceptance suite, because coverage cannot be appended across
+runners) and Acceptance on PRs to `main`. That brings it to 3:30 with every
+non-acceptance test still running on every push. Progression is now the
+critical path, so the current sprint's tests set the push time.
 
 Also found while writing this entry: the pre-commit hook ran
 `regression or sanity`, which after the bump had quietly grown to include the
@@ -1844,5 +1858,3 @@ module-scoped fixture cut it from four missions to three, and it now takes
 - **Two acceptance tests call `master.tick()` directly**, bypassing failure
   injection. Harmless today — neither scenario schedules a failure — but a
   failure scenario added to them would silently run healthy.
-- **The CI push gate is over its 5-minute budget again** — 6 min 15 s after
-  Feature 11, without coverage. No decision yet.

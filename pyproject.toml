@@ -12,8 +12,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# The operator console (Feature 13). Optional so the simulator, CI and the
-# Docker image never install it: `uv sync --extra ui`.
+# The operator console (Feature 13). Optional so the simulator and CI never
+# install it: `uv sync --extra ui`.
 ui = ["streamlit>=1.40"]
 
 [project.scripts]
