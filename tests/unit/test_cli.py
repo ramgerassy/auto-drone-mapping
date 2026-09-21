@@ -7,6 +7,7 @@ live viewer needs a display, so it is exercised manually rather than in CI.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -14,13 +15,20 @@ import pytest
 
 from swarm_mapping.cli import (
     MissionResult,
+    build_mission,
     coverage_fraction,
     select_start_positions,
 )
+from swarm_mapping.config.loader import load_config
+from swarm_mapping.config.schema import FailureSettings, ScenarioConfig
 from swarm_mapping.mapping.grid import OccupancyGrid
 from swarm_mapping.mapping.types import MapConfig
 
 pytestmark = pytest.mark.sprint(2)  # tests introduced in Sprint 2
+
+SMALL_INDOOR = (
+    Path(__file__).resolve().parents[2] / "scenarios" / "small_indoor" / "config.yaml"
+)
 
 POSITIONS = (
     (0.0, 0.0, 1.0),
@@ -134,3 +142,27 @@ class TestCoverageFraction:
         grid.log_odds[0, :] = np.log(0.55 / 0.45)
 
         assert coverage_fraction(grid) == 0.0
+
+
+@pytest.mark.sprint(3)
+class TestFailureWiring:
+    """The schedule reaches the engine through Mission.tick(), not the master."""
+
+    @staticmethod
+    def _config(*failures: FailureSettings) -> ScenarioConfig:
+        return replace(load_config(SMALL_INDOOR), failures=failures)
+
+    def test_mission_tick_applies_a_failure_on_its_tick(self) -> None:
+        """A failure lands on its scheduled tick, before the master runs it."""
+        mission = build_mission(self._config(FailureSettings(0, 2, "silent")), drones=1)
+        mission.tick()  # tick 0
+        mission.tick()  # tick 1
+        assert mission.engine.heartbeat(0)
+        mission.tick()  # tick 2 — applied before the master runs
+        assert not mission.engine.heartbeat(0)
+
+    def test_a_failure_for_a_dropped_drone_fails_fast(self) -> None:
+        """Decision D6, end to end through --drones."""
+        config = self._config(FailureSettings(1, 10, "stuck"))
+        with pytest.raises(ValueError, match="drone 1"):
+            build_mission(config, drones=1)

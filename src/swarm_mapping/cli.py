@@ -38,6 +38,8 @@ from swarm_mapping.perception.rangefinder import Rangefinder
 from swarm_mapping.planning.frontier_strategy import NearestFrontier
 from swarm_mapping.planning.path_planner import AStarPlanner
 from swarm_mapping.simulation.engine import SimulationEngine
+from swarm_mapping.simulation.failure import FailureInjector, ScheduledFailure
+from swarm_mapping.simulation.types import FailureMode
 from swarm_mapping.visualization.path_log import PathLog, save_path_log
 from swarm_mapping.visualization.renderer import LiveViewer
 
@@ -120,12 +122,27 @@ class Mission:
         mapper: The shared map every drone contributes to.
         master: The coordinator driving the mission.
         config: The validated scenario this was built from.
+        injector: Applies the scenario's failure schedule. Empty for a
+            nominal run.
     """
 
     engine: SimulationEngine
     mapper: Mapper
     master: CentralizedMaster
     config: ScenarioConfig
+    injector: FailureInjector
+
+    def tick(self) -> None:
+        """Advance one tick: inject any failure due now, then run the master.
+
+        The one place the failure schedule meets the tick loop, so the CLI,
+        tests and benchmarks cannot disagree about when a failure lands.
+        Applied *before* the master's tick, so a drone scheduled for tick T is
+        already down when tick T senses — and the master learns of it only
+        through what that tick observes.
+        """
+        self.injector.apply(self.master.tick_count)
+        self.master.tick()
 
 
 def select_start_positions(
@@ -273,7 +290,17 @@ def build_mission(config: ScenarioConfig, drones: int | None = None) -> Mission:
         target_tolerance_cells=config.coordination.target_tolerance_cells,
     )
 
-    return Mission(engine=engine, mapper=mapper, master=master, config=config)
+    injector = FailureInjector(
+        engine,
+        [
+            ScheduledFailure(drone_id=f.drone_id, tick=f.tick, mode=FailureMode(f.mode))
+            for f in config.failures
+        ],
+    )
+
+    return Mission(
+        engine=engine, mapper=mapper, master=master, config=config, injector=injector
+    )
 
 
 def _open_viewer(mission: Mission) -> LiveViewer:
@@ -384,7 +411,7 @@ def run_pipeline(
 
     try:
         while not master.is_complete and master.tick_count < max_ticks:
-            master.tick()
+            mission.tick()
 
             for drone_id, counts in visits.items():
                 col, row = master.drone_states[drone_id].cell

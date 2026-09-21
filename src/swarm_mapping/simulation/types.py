@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 
 import numpy as np
 from numpy.typing import NDArray
@@ -35,3 +36,20 @@ class RayHit:
     distance: float
     hit_point: NDArray[np.float64]
     geom_id: int
+
+
+class FailureMode(Enum):
+    """How a drone fails.
+
+    Both modes ignore motion commands. They differ in what the drone still
+    reports, which is what the coordinator can observe — and so decides which
+    detector catches it.
+
+    Attributes:
+        SILENT: Crash or comms loss. No heartbeat, no scan, no motion.
+        STUCK: Motor fault. Heartbeat and sensor continue; commanded moves do
+            not happen.
+    """
+
+    SILENT = "silent"
+    STUCK = "stuck"
