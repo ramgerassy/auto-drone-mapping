@@ -2,40 +2,126 @@
 
 Cooperative drone swarm for autonomous exploration and 2.5D mapping in MuJoCo.
 
-## Quick Start
+A swarm of 1–5 drones explores an unknown indoor environment and builds a shared
+2.5D map: a 2D occupancy grid plus a per-cell height, saved as `.npz` (data) and
+`.png` (to look at). No route is scripted. One central master assigns each drone
+a frontier, the edge of what is known, and plans a collision-free path to it
+with A\*. Drones yield to each other and the swarm stops when nothing reachable
+is left. A drone can also be scripted to fail mid-mission, either by going
+silent or by jamming its motors. The master detects the failure from symptoms
+alone, hands the failed drone's frontier to a teammate, routes around the wreck
+and still finishes the map. Poses come from the simulator's ground truth, so
+there is no SLAM.
 
-### Prerequisites
+The design and its reasoning are in [`docs/design.md`](docs/design.md). The
+decision log is in [`docs/progress.md`](docs/progress.md).
 
-- Python 3.13+
-- [uv](https://docs.astral.sh/uv/) for dependency management
+## Install
 
-### Install
-
-```bash
-uv sync
-```
-
-### Run the Demo
-
-```bash
-uv run swarm-mapping --config scenarios/small_indoor/config.yaml --output output/ --verbose
-```
-
-This runs a single drone through a lawnmower patrol pattern in a 20m x 20m indoor room, scanning the environment with a rangefinder sensor and building a 2.5D occupancy map.
-
-**Watch it live:** add `--view` to open an interactive MuJoCo 3D window and watch the drone fly the patrol in real time:
+Requires Python 3.13+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-uv run swarm-mapping --config scenarios/small_indoor/config.yaml --output output/ --view
+uv sync                 # the simulator, CLI and dev tools
+uv sync --extra ui      # also the operator console (Streamlit), optional
 ```
 
-The viewer is read-only monitoring — the exported map is identical with or without it. Closing the window mid-run lets the mission finish headless. Requires a display, so it is not run in CI.
+## Run a scenario from the CLI
 
-**Output:**
-- `output/map.png` — height-colored occupancy image (white = free, blue = unknown, grayscale = obstacles shaded by height)
-- `output/map.npz` — raw data arrays (log-odds, probability, height, resolution, origin)
+```bash
+uv run swarm-mapping --config scenarios/small_indoor/config.yaml --output output/
+```
 
-**Typical results:** 81 waypoints, 98% coverage, ~1 second runtime.
+| Scenario | What it is | Start positions |
+| --- | --- | --- |
+| `small_indoor` | 20 m × 20 m single room. The baseline. | 3 |
+| `large_indoor` | 50 m × 50 m corridor cross with 8 rooms. The coordination scene. | 5 |
+| `loop_indoor` | 50 m × 50 m ring corridor with 12 rooms. The control for `large_indoor`: the same extent, but there are always two routes between any two places. | 5 |
+| `comb_indoor` | 40 m × 40 m spine with nine dead-end ribs. An adversarial allocation benchmark. | 3 |
+| `failure_injection` | `large_indoor` where drone 1 goes **silent** at tick 300. | 5 |
+| `failure_stuck` | `large_indoor` where drone 1's motors **jam** at tick 300. It keeps reporting but stops moving. | 5 |
+
+Each scenario is `scenarios/<name>/config.yaml`. The config names its MJCF scene
+and sets every parameter. Nothing is hardcoded.
+
+Key flags (`uv run swarm-mapping --help` lists all of them):
+
+| Flag | Effect |
+| --- | --- |
+| `--config PATH` | Scenario YAML. Required. |
+| `--output DIR` | Where the run's files go. Default `output/`. |
+| `--drones N` | Fly the first N start positions. It never invents new ones. |
+| `--assignment {greedy,global}` | Override how frontiers are handed out. |
+| `--target-tolerance CELLS` | Override how far a frontier may drift before a drone's target counts as gone. |
+| `--view` | Open a live MuJoCo 3D viewer. View-only: the map is identical without it. Needs a display. |
+| `--visit-heatmaps` | Also write one visit-count PNG per drone. Diagnostic. |
+| `--verbose` | Log INFO to stderr. |
+
+`--assignment` and `--target-tolerance` together select the allocation
+variants that the console and benchmarks compare: **baseline** (`greedy`, 0),
+**A** (`global`, 0), **B** (`greedy`, 3), **A+B** (`global`, 3).
+
+The process exits non-zero if the mission hit its tick cap without finishing.
+A run that ends "blocked" (a few frontiers it could see but not reach) still
+exits 0. See [design.md §8.1](docs/design.md) for why.
+
+### What a run writes
+
+Everything goes into `--output DIR`:
+
+| File | Contents |
+| --- | --- |
+| `map.npz` | The map data: log-odds, probability, height, resolution, origin. |
+| `map.png` | The map image, with obstacles shaded by height. |
+| `log.jsonl` | Every log event, one JSON object per line, each with `event` and `tick`. Runs with identical inputs produce identical logs. |
+| `run.json` | The inputs (a config snapshot, drones, variant) and the outcome (ticks, coverage, blocked, succeeded, per-drone path stats, event counts). |
+| `paths.json`, `route_drone_<id>.png` | Each drone's path. |
+| `visits_drone_<id>.png` | Only with `--visit-heatmaps`. |
+
+## The operator console
+
+```bash
+uv sync --extra ui
+uv run swarm-console        # opens in the browser
+```
+
+Streamlit is an optional extra, so the core install, CI and Docker image never
+include it. Every console run launches the CLI above as a separate process, so
+it is identical to typing the same command. Runs land in
+`runs/<time>_<scenario>_<variant>_<N>d/`, which git ignores.
+
+- **Run**: pick a scenario, a drone count (up to the number of start
+  positions it declares), an allocation variant, and headless or MuJoCo view. A live tick and log panel shows while the run is in flight.
+- **Scenarios**: list scenarios with their validity, and upload a new room (a
+  config plus its MJCF scene). It is validated, including all five spawns, and
+  installed without overwriting anything.
+- **History**: every past run with its map, each drone's route, the log with
+  an event filter, its metrics, and a side-by-side comparison of two runs.
+
+## Tests
+
+```bash
+uv run pytest -m "not acceptance"                    # everything except full-scenario runs
+uv run pytest -m "regression and not acceptance"     # prior sprints: must not break
+uv run pytest -m "progression and not acceptance"    # current sprint: work in flight
+uv run pytest -m acceptance                          # full-scenario runs; minutes, not seconds
+```
+
+Every test module carries a `sprint(N)` marker. `tests/conftest.py` labels it
+regression or progression against `CURRENT_SPRINT`. CI runs both labels on
+every push. It adds coverage and the acceptance suite on pull requests to
+`main`. The console's Streamlit UI tests run only when the `ui` extra is
+installed, so they run locally and skip in CI.
+
+## Benchmarks
+
+These are not tests. They run full missions and print a table. Run them by hand.
+
+```bash
+uv run python benchmarks/strategy_matrix.py [scenario]   # compare the allocation variants (baseline, A, B, A+B) across scenarios
+uv run python benchmarks/oracle_ceiling.py --mode=greedy large_indoor   # upper bound for a perfect information-gain frontier strategy
+uv run python benchmarks/failure_recovery.py   # failure-detection latency KPI and recovery cost, silent and stuck
+```
+
 
 ## Design Decisions
 
