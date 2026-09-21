@@ -19,6 +19,7 @@ drones:
     - [0.0, -1.2, 1.0]
     - [0.0, 1.2, 1.0]
   altitude: 0.3          # low, so a horizontal ray sees anything taller
+  cruise_speed: 1.0      # m/s — one cell per tick; see docs/sprint-3-plan.md D1
 
 sensor:
   # Models one Slamtec RPLIDAR A2M8: a 360-degree 2D scanning LiDAR rated to

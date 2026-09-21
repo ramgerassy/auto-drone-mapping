@@ -1,9 +1,16 @@
-# Large indoor scenario — 50m x 50m floor plan, corridor cross with 8 rooms.
+# Failure stuck scenario — same as large_indoor, one drone's motors jam.
 #
-# Sprint 2: the environment that makes coordination matter. Three drones
-# explore it with frontier-based assignment; the acceptance suite checks that
-# every one of the eight rooms is entered, not merely that the corridors are
-# mapped.
+# CLAUDE.md scenario 4: "same as large indoor, with one drone scripted to
+# fail mid-mission. Tests recovery." Same scene, same five spawns, same
+# parameters as large_indoor — the only difference is the `failures:` block
+# below, so a comparison against the healthy large_indoor run isolates the
+# effect of losing a drone rather than any other change.
+#
+# Drone 1 keeps reporting but stops moving (a motor fault) at tick 300. Tick
+# 300 is mid-mission: five healthy drones reach 95% coverage at tick 517 and
+# finish at tick 894 (F11-R2), so the failure lands well before either
+# milestone. Drone 1 holds a target at tick 300, so its granted-but-unrealized
+# moves are detectable (F11-R3) — a stuck drone with nowhere to go could not be.
 
 scene:
   # Path relative to src/swarm_mapping/simulation/assets/
@@ -81,3 +88,8 @@ coordination:
   return_to_base_ticks: 150  # idle this long -> fly home and park
   heartbeat_timeout_ticks: 3  # missed heartbeats before a drone is declared lost
   stuck_timeout_ticks: 3      # granted moves that did not happen before "stuck"
+
+failures:
+  - drone: 1
+    tick: 300
+    mode: stuck
