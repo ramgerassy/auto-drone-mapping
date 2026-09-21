@@ -18,7 +18,7 @@ import pytest
 import yaml
 
 from swarm_mapping.app import validation
-from swarm_mapping.app.validation import validate_scenario
+from swarm_mapping.app.validation import install_scenario, validate_scenario
 from swarm_mapping.cli import resolve_scene_path
 
 pytestmark = pytest.mark.sprint(3)
@@ -198,6 +198,120 @@ class TestNeverRaises:
 
         (problem,) = validate_scenario(write_config(tmp_path, raw))
         assert "scene" in problem
+
+
+class TestInstallScenario:
+    """R6 and test case 11: uploads are validated first and never overwrite."""
+
+    @pytest.fixture
+    def roots(self, tmp_path: Path) -> tuple[Path, Path]:
+        """Empty stand-ins for the scenarios root and the assets directory."""
+        scenarios_root = tmp_path / "scenarios"
+        assets_dir = tmp_path / "assets"
+        scenarios_root.mkdir()
+        assets_dir.mkdir()
+        return scenarios_root, assets_dir
+
+    @staticmethod
+    def upload(name: str = "large_indoor") -> tuple[str, str]:
+        """A valid five-spawn upload: a shipped config and its scene."""
+        config_text = (SCENARIOS / name / "config.yaml").read_text()
+        scene_text = resolve_scene_path(f"{name}.xml").read_text()
+        return config_text, scene_text
+
+    @staticmethod
+    def everything_under(*roots: Path) -> list[Path]:
+        """Every file and directory below the given roots, sorted."""
+        return sorted(p for root in roots for p in root.rglob("*"))
+
+    def test_a_valid_room_is_installed(self, roots: tuple[Path, Path]) -> None:
+        """Scene into assets, config into its own directory, path rewritten."""
+        scenarios_root, assets_dir = roots
+        config_text, scene_text = self.upload()
+
+        problems = install_scenario(
+            "my_room", config_text, scene_text, scenarios_root, assets_dir
+        )
+
+        assert problems == []
+        assert (assets_dir / "my_room.xml").read_text() == scene_text
+        installed = yaml.safe_load(
+            (scenarios_root / "my_room" / "config.yaml").read_text()
+        )
+        original = yaml.safe_load(config_text)
+        assert installed["scene"] == {"path": "my_room.xml"}
+        del installed["scene"], original["scene"]
+        assert installed == original
+
+    @pytest.mark.parametrize(
+        "name",
+        ["../escape", "a/b", "Room", "1room", "", "room-1", "r" * 42, "room.xml"],
+    )
+    def test_bad_names_are_rejected_and_nothing_written(
+        self, roots: tuple[Path, Path], name: str
+    ) -> None:
+        """Anything off the name pattern, including `../`, writes nothing."""
+        config_text, scene_text = self.upload()
+
+        problems = install_scenario(name, config_text, scene_text, *roots)
+
+        assert problems
+        assert self.everything_under(*roots) == []
+
+    def test_an_existing_scenario_is_never_overwritten(
+        self, roots: tuple[Path, Path]
+    ) -> None:
+        """A name taken by a scenario directory is refused, files untouched."""
+        scenarios_root, assets_dir = roots
+        existing = scenarios_root / "small_indoor"
+        existing.mkdir()
+        (existing / "config.yaml").write_text("shipped")
+        config_text, scene_text = self.upload()
+
+        problems = install_scenario(
+            "small_indoor", config_text, scene_text, scenarios_root, assets_dir
+        )
+
+        assert any("already exists" in p for p in problems)
+        assert (existing / "config.yaml").read_text() == "shipped"
+        assert list(assets_dir.iterdir()) == []
+
+    def test_an_existing_scene_file_is_never_overwritten(
+        self, roots: tuple[Path, Path]
+    ) -> None:
+        """A name taken by a scene file is refused, files untouched."""
+        scenarios_root, assets_dir = roots
+        (assets_dir / "my_room.xml").write_text("shipped scene")
+        config_text, scene_text = self.upload()
+
+        problems = install_scenario(
+            "my_room", config_text, scene_text, scenarios_root, assets_dir
+        )
+
+        assert any("already exists" in p for p in problems)
+        assert (assets_dir / "my_room.xml").read_text() == "shipped scene"
+        assert list(scenarios_root.iterdir()) == []
+
+    def test_an_invalid_room_writes_nothing(self, roots: tuple[Path, Path]) -> None:
+        """Three spawns fails the upload rule, and the roots stay empty."""
+        config_text, scene_text = self.upload("small_indoor")
+
+        problems = install_scenario("my_room", config_text, scene_text, *roots)
+
+        assert len(problems) == 1
+        assert "3" in problems[0]
+        assert self.everything_under(*roots) == []
+
+    def test_an_unparseable_config_writes_nothing(
+        self, roots: tuple[Path, Path]
+    ) -> None:
+        """Broken YAML is a problem, not an exception, and writes nothing."""
+        _, scene_text = self.upload()
+
+        problems = install_scenario("my_room", "key: [unclosed", scene_text, *roots)
+
+        assert problems
+        assert self.everything_under(*roots) == []
 
 
 PILLAR_SCENE = """<mujoco model="pillar">

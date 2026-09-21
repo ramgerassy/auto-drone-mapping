@@ -14,7 +14,10 @@ keep in step, and the copy would drift.
 
 from __future__ import annotations
 
+import re
+import tempfile
 from pathlib import Path
+from typing import Any
 
 import mujoco
 import numpy as np
@@ -27,6 +30,15 @@ from swarm_mapping.simulation.engine import SimulationEngine
 UPLOAD_DRONES = 5
 """Start positions an uploaded room must declare: "up to 5 drones" means all
 five usable (CLAUDE.md scopes the system at 1-5 drones)."""
+
+SCENARIO_NAME = re.compile(r"[a-z][a-z0-9_]{0,40}")
+"""What an uploaded room may be called (matched in full). No `/`, no `.`: the
+name becomes a directory and a file name, so it must not be able to climb out
+of either root or pick up a second extension."""
+
+# Placeholder for the staging directory in problems reported back to the user,
+# who never saw that temporary path.
+_UPLOAD = "<upload>"
 
 
 def validate_scenario(
@@ -92,6 +104,102 @@ def validate_scenario(
     except Exception as exc:  # the contract: problems, never raises
         problems.append(str(exc))
     return problems
+
+
+def install_scenario(
+    name: str,
+    config_text: str,
+    scene_text: str,
+    scenarios_root: Path,
+    assets_dir: Path,
+) -> list[str]:
+    """Validate an uploaded room and, only if it is clean, install it.
+
+    The room is staged in a temporary directory and validated there with the
+    upload rules (`require_five=True`); nothing is written under either root
+    unless validation passes. Nothing is ever overwritten: a name already used
+    by a scenario directory or a scene file is refused, and the final writes
+    use exclusive creation so even a race cannot replace a file.
+
+    Installed exactly like a shipped scenario: the scene goes to
+    `assets_dir/<name>.xml` and the config to `scenarios_root/<name>/config.yaml`
+    with `scene.path: <name>.xml`, which resolves under the bundled assets.
+    The config is rewritten through YAML, so comments in the upload are not
+    kept.
+
+    Args:
+        name: The room's name; must match `SCENARIO_NAME`.
+        config_text: The uploaded scenario YAML.
+        scene_text: The uploaded MJCF scene.
+        scenarios_root: Directory holding one sub-directory per scenario.
+        assets_dir: Directory holding the scene files that relative
+            `scene.path` values resolve against.
+
+    Returns:
+        Problems that stopped the install. Empty means it was installed.
+    """
+    if not SCENARIO_NAME.fullmatch(name):
+        return [
+            f"scenario name {name!r} is not allowed: use 1-41 characters, a "
+            f"lowercase letter first, then lowercase letters, digits or '_'"
+        ]
+    scenario_dir = scenarios_root / name
+    scene_file = assets_dir / f"{name}.xml"
+    clashes = [
+        f"{path} already exists; installing never overwrites"
+        for path in (scenario_dir, scene_file)
+        if path.exists()
+    ]
+    if clashes:
+        return clashes
+
+    raw = _scenario_document(config_text)
+    with tempfile.TemporaryDirectory(prefix="swarm_upload_") as staging_name:
+        staging = Path(staging_name)
+        staged_scene = staging / f"{name}.xml"
+        staged_scene.write_text(scene_text)
+        staged_config = staging / "config.yaml"
+        if raw is None:
+            # Unusable as a scenario document: stage it as uploaded and let
+            # the validator say what is wrong, in the same words it would use
+            # for a file on disk.
+            staged_config.write_text(config_text)
+        else:
+            raw["scene"]["path"] = str(staged_scene)
+            staged_config.write_text(yaml.safe_dump(raw, sort_keys=False))
+        problems = validate_scenario(staged_config, require_five=True)
+    if problems:
+        return [problem.replace(str(staging), _UPLOAD) for problem in problems]
+    assert raw is not None  # a document without a scene section cannot validate
+
+    raw["scene"]["path"] = scene_file.name
+    try:
+        assets_dir.mkdir(parents=True, exist_ok=True)
+        scenarios_root.mkdir(parents=True, exist_ok=True)
+        with scene_file.open("x") as handle:
+            handle.write(scene_text)
+        scenario_dir.mkdir()
+        with (scenario_dir / "config.yaml").open("x") as handle:
+            handle.write(yaml.safe_dump(raw, sort_keys=False))
+    except FileExistsError as exc:
+        return [f"{exc.filename} already exists; installing never overwrites"]
+    return []
+
+
+def _scenario_document(config_text: str) -> dict[str, Any] | None:
+    """Parse an uploaded config far enough to rewrite its `scene.path`.
+
+    Returns:
+        The document, or None if it is not YAML, not a mapping, or has no
+        `scene` mapping — the validator then reports why.
+    """
+    try:
+        raw = yaml.safe_load(config_text)
+    except yaml.YAMLError:
+        return None
+    if not isinstance(raw, dict) or not isinstance(raw.get("scene"), dict):
+        return None
+    return raw
 
 
 def _spawns_in_geometry(
