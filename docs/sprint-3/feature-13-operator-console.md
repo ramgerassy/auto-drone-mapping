@@ -47,7 +47,9 @@ CI runs `uv sync` **without** the `ui` extra, so `tests/unit/test_app/test_conso
 | `src/swarm_mapping/app/history.py` | create | history table rows, two-run comparison, log tail/filter helpers |
 | `src/swarm_mapping/app/console.py` | create | the Streamlit UI |
 | `src/swarm_mapping/app/launch.py` | create | `swarm-console` entry point |
-| `tests/unit/test_app/test_runner.py` | create | argv, variants, naming, no-streamlit import, launcher |
+| `tests/unit/test_app/conftest.py` | create | `make_run`: hand-written run dirs via `write_run_record` |
+| `tests/unit/test_app/test_runner.py` | create | argv, variants, naming, roots, scenario menu, no-streamlit import |
+| `tests/unit/test_app/test_launch.py` | create | `swarm-console`: install hint, streamlit argv |
 | `tests/unit/test_app/test_history.py` | create | rows, comparison, log reading |
 | `tests/unit/test_app/test_console.py` | create | `AppTest` smoke and behaviour |
 
@@ -65,10 +67,10 @@ CI runs `uv sync` **without** the `ui` extra, so `tests/unit/test_app/test_conso
 - `launch(request, root, now=None) -> tuple[Popen[bytes], Path]` — `console.txt` gets stdout+stderr.
 - `ScenarioChoice(name, config_path, spawns: int | None, problems: list[str])`, `scenario_choices(root) -> list[ScenarioChoice]` — every `<root>/*/config.yaml`, sorted by name, validated with `validate_scenario` (default rules).
 
-- [ ] **Step 1: tests** — sprint test 13: one parametrised case per label asserting `--assignment`/`--target-tolerance` equal `VARIANTS[label]`, and that `VARIANTS` has exactly the four pairs `{baseline: (greedy, 0), A: (global, 0), B: (greedy, 3), A+B: (global, 3)}`; the full argv for one request; `--view` present iff `view`; argv parses with the CLI's own flag names (each flag appears in `cli.py`'s `add_argument` set); unknown variant / zero drones rejected; name format `20260921-143005_small_indoor_AB_3d`; collision → `-2`, then `-3`; `new_run_dir` creates the root; env-var roots and defaults; `scenario_choices` lists valid and invalid scenarios with problems and spawn counts; `launch` on a trivial request is **not** tested with the real CLI (no mission in tests) — instead `launch` is tested with `build_argv` monkeypatched to `[sys.executable, "-c", "print('hi')"]` so the `console.txt` capture is real. C2: a fresh interpreter with a `sys.meta_path` finder that raises `ImportError` for `streamlit` imports `swarm_mapping`, `swarm_mapping.app.runner`, `swarm_mapping.app.history`, `swarm_mapping.app.validation` and asserts `"streamlit" not in sys.modules`.
-- [ ] **Step 2: run, see them fail.**
-- [ ] **Step 3: implement.**
-- [ ] **Step 4: green; commit** `feat(app): runner — a console run is the CLI command`.
+- [x] **Step 1: tests** — sprint test 13: one parametrised case per label asserting `--assignment`/`--target-tolerance` equal `VARIANTS[label]`, and that `VARIANTS` has exactly the four pairs `{baseline: (greedy, 0), A: (global, 0), B: (greedy, 3), A+B: (global, 3)}`; the full argv for one request; `--view` present iff `view`; argv parses with the CLI's own flag names (each flag appears in `cli.py`'s `add_argument` set); unknown variant / zero drones rejected; name format `20260921-143005_small_indoor_AB_3d`; collision → `-2`, then `-3`; `new_run_dir` creates the root; env-var roots and defaults; `scenario_choices` lists valid and invalid scenarios with problems and spawn counts; `launch` on a trivial request is **not** tested with the real CLI (no mission in tests) — instead `launch` is tested with `build_argv` monkeypatched to `[sys.executable, "-c", "print('hi')"]` so the `console.txt` capture is real. C2: a fresh interpreter with a `sys.meta_path` finder that raises `ImportError` for `streamlit` imports `swarm_mapping`, `swarm_mapping.app.runner`, `swarm_mapping.app.history`, `swarm_mapping.app.validation` and asserts `"streamlit" not in sys.modules`.
+- [x] **Step 2: run, see them fail.**
+- [x] **Step 3: implement.**
+- [x] **Step 4: green; commit** `feat(app): runner — a console run is the CLI command`.
 
 ### Task 2: `history` — what the History page shows, as data
 
@@ -80,8 +82,8 @@ CI runs `uv sync` **without** the `ui` extra, so `tests/unit/test_app/test_conso
 - `read_log(path, last=None) -> list[dict[str, Any]]` — parsed `log.jsonl` lines; a partial final line (a run still writing) is skipped, never raised.
 - `route_images(record) -> list[tuple[str, Path]]` — `(drone id, route_drone_<id>.png)` for each drone in `outputs.paths` whose file exists, in drone-id numeric order.
 
-- [ ] **Step 1: tests** — row fields from a hand-built `RunRecord`; failures detected read from `event_counts`, 0 when absent; comparison differences and non-numeric rows; `read_log` tail, partial line, missing file → `[]`; `route_images` order `2 < 10` and missing files skipped.
-- [ ] **Step 2–4:** fail, implement, green; commit `feat(app): history rows, run comparison and log reading`.
+- [x] **Step 1: tests** — row fields from a hand-built `RunRecord`; failures detected read from `event_counts`, 0 when absent; comparison differences and non-numeric rows; `read_log` tail, partial line, missing file → `[]`; `route_images` order `2 < 10` and missing files skipped.
+- [x] **Step 2–4:** fail, implement, green; commit `feat(app): history rows, run comparison and log reading`.
 
 ### Task 3: `console` and `launch` — the Streamlit UI
 
@@ -94,13 +96,13 @@ Pages (sidebar radio "Page"):
 
 `launch.main()`: if `importlib.util.find_spec("streamlit")` is None, print the install hint to stderr and exit 1; else run `[sys.executable, -m, streamlit, run, <console.py>, *extra args]` and exit with its code.
 
-- [ ] **Step 1: tests (skip without streamlit)** — sprint test 12: each page renders without exception on an empty runs root. Sprint test 14: select a scenario, 2 drones, variant B, "With MuJoCo view", click Run with `runner.launch` monkeypatched to capture the request → `build_argv(captured, dir)` equals the argv typed by hand. Sprint test 15: an invalid upload (three spawns) shows the validator's message as an error and both tmp roots stay empty — the file uploader is replaced by a stand-in returning the upload's bytes, because `AppTest` cannot drive `st.file_uploader`. History renders a hand-written run directory (written with `write_run_record`), including its per-drone tab and compare section. Launcher: missing streamlit prints the hint.
-- [ ] **Step 2–4:** fail, implement, green (with `--extra ui`); commit `feat(app): operator console — run, scenarios, history`.
+- [x] **Step 1: tests (skip without streamlit)** — sprint test 12: each page renders without exception on an empty runs root. Sprint test 14: select a scenario, 2 drones, variant B, "With MuJoCo view", click Run with `runner.launch` monkeypatched to capture the request → `build_argv(captured, dir)` equals the argv typed by hand. Sprint test 15: an invalid upload (three spawns) shows the validator's message as an error and both tmp roots stay empty — the file uploader is replaced by a stand-in returning the upload's bytes, because `AppTest` cannot drive `st.file_uploader`. History renders a hand-written run directory (written with `write_run_record`), including its per-drone tab and compare section. Launcher: missing streamlit prints the hint.
+- [x] **Step 2–4:** fail, implement, green (with `--extra ui`); commit `feat(app): operator console — run, scenarios, history`.
 
 ### Task 4: smoke check, report
 
-- [ ] Start `uv run --extra ui streamlit run src/swarm_mapping/app/console.py --server.headless true --server.port 8599` in the background, `curl -s localhost:8599/_stcore/health` → `ok`, stop it.
-- [ ] Full pre-commit gate; push the branch.
+- [x] Start `uv run --extra ui streamlit run src/swarm_mapping/app/console.py --server.headless true --server.port 8599` in the background, `curl -s localhost:8599/_stcore/health` → `ok`, stop it.
+- [x] Full pre-commit gate; push the branch.
 
 ## Sprint test mapping
 
@@ -110,3 +112,9 @@ Pages (sidebar radio "Page"):
 | 13 | `test_runner.py::TestVariants` |
 | 14 | `test_console.py::TestRunPage::test_run_builds_the_argv_a_user_would_type` |
 | 15 | `test_console.py::TestUpload::test_invalid_upload_shows_problems_and_writes_nothing` |
+
+## As built
+
+- Tasks 1 and 2 landed as one commit (the no-streamlit import test covers both modules). The launcher tests live in `test_launch.py` so they arrive with `launch.py`.
+- The live panel reads progress by event name (`mission_progress`'s `coverage`) and the log's `tick` field, never message text — matching Feature 12's review-round-1 event names.
+- `st.fragment` is applied at the call site, not as a decorator: in CI (no extra) streamlit is untyped, and mypy strict rejects an untyped decorator. pandas joins streamlit in the mypy override (no stubs).
