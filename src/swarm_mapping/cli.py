@@ -16,7 +16,8 @@ import argparse
 import logging
 import sys
 import time
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -37,13 +38,27 @@ from swarm_mapping.mapping.types import MapConfig
 from swarm_mapping.perception.rangefinder import Rangefinder
 from swarm_mapping.planning.frontier_strategy import NearestFrontier
 from swarm_mapping.planning.path_planner import AStarPlanner
+from swarm_mapping.records import (
+    LOG_FILE,
+    RUN_FILE,
+    RunInputs,
+    RunLog,
+    RunOutputs,
+    RunRecord,
+    capture_run_log,
+    variant_label,
+    write_run_record,
+)
 from swarm_mapping.simulation.engine import SimulationEngine
 from swarm_mapping.simulation.failure import FailureInjector, ScheduledFailure
 from swarm_mapping.simulation.types import FailureMode
 from swarm_mapping.visualization.path_log import PathLog, save_path_log
 from swarm_mapping.visualization.renderer import LiveViewer
 
-logger = logging.getLogger(__name__)
+# Named explicitly rather than `__name__`: under `python -m swarm_mapping.cli`
+# (how the operator console launches runs) `__name__` is "__main__", which sits
+# outside the `swarm_mapping` logger tree the run log captures.
+logger = logging.getLogger("swarm_mapping.cli")
 
 # Path to the simulation assets directory.
 _ASSETS_DIR = Path(__file__).parent / "simulation" / "assets"
@@ -329,6 +344,41 @@ def _open_viewer(mission: Mission) -> LiveViewer:
     return viewer
 
 
+def describe_inputs(
+    config_path: Path,
+    config: ScenarioConfig,
+    drones: int,
+    view: bool,
+) -> RunInputs:
+    """Describe a run's inputs for its `run.json`.
+
+    Separate from `run_pipeline` so the claim "the viewer is view-only" can be
+    checked on the record itself: `view` is an input like any other, and this
+    function is the only place it enters the record.
+
+    Args:
+        config_path: The scenario YAML the run loaded.
+        config: The config as run — CLI overrides already applied.
+        drones: Drones flown, after `--drones`.
+        view: Whether the live viewer was open.
+
+    Returns:
+        The inputs section of the record.
+    """
+    coordination = config.coordination
+    return RunInputs(
+        config_path=str(Path(config_path).resolve()),
+        config=asdict(config),
+        drones=drones,
+        assignment=coordination.assignment,
+        target_tolerance_cells=coordination.target_tolerance_cells,
+        variant=variant_label(
+            coordination.assignment, coordination.target_tolerance_cells
+        ),
+        view=view,
+    )
+
+
 def run_pipeline(
     config_path: Path,
     output_dir: Path,
@@ -339,11 +389,16 @@ def run_pipeline(
     assignment: str | None = None,
     target_tolerance: int | None = None,
 ) -> MissionResult:
-    """Run the full exploration pipeline and export the map.
+    """Run the full exploration pipeline, export the map, and record the run.
+
+    Besides the map, every run leaves its record in `output_dir`: `log.jsonl`
+    (every log line of the run, as JSON), `run.json` (inputs and outcome),
+    `paths.json` and one `route_drone_<id>.png` per drone. See `records`.
 
     Args:
         config_path: Path to the scenario YAML config.
-        output_dir: Directory for output files (.npz, .png).
+        output_dir: Directory for output files. Created once the config has
+            validated; files from an earlier run in it are replaced.
         view: If True, open a live MuJoCo 3D viewer. View-only — the exported
             map is identical whether or not this is enabled.
         view_delay: Extra seconds to pause per rendered tick. Ignored without
@@ -365,6 +420,13 @@ def run_pipeline(
         ValueError: If the config fails validation or the drone override is
             out of range.
     """
+    # Wall-clock values are *recorded*, never *decided on*: nothing below
+    # branches on them, so they cannot perturb the run's determinism.
+    started_at = datetime.now(UTC).isoformat(timespec="microseconds")
+    clock_start = time.monotonic()
+
+    # Validate before touching the output directory: a bad config or drone
+    # override fails fast and leaves nothing behind, as it always has.
     config = load_config(config_path)
     if assignment is not None or target_tolerance is not None:
         config = replace(
@@ -380,28 +442,73 @@ def run_pipeline(
             ),
         )
     mission = build_mission(config, drones)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    with capture_run_log(output_dir / LOG_FILE) as run_log:
+        return _run_recorded(
+            config_path,
+            output_dir,
+            run_log,
+            config=config,
+            mission=mission,
+            started_at=started_at,
+            clock_start=clock_start,
+            view=view,
+            view_delay=view_delay,
+            visit_heatmaps=visit_heatmaps,
+        )
+
+
+def _run_recorded(
+    config_path: Path,
+    output_dir: Path,
+    run_log: RunLog,
+    *,
+    config: ScenarioConfig,
+    mission: Mission,
+    started_at: str,
+    clock_start: float,
+    view: bool,
+    view_delay: float,
+    visit_heatmaps: bool,
+) -> MissionResult:
+    """The body of `run_pipeline`, run while its log is being captured.
+
+    Split out only so the mission code keeps its indentation: `config` (with
+    overrides applied) and `mission` were validated and built before the
+    output directory was touched; `run_log` is the active log, and the two
+    wall-clock readings were taken before either.
+    """
     master = mission.master
     max_ticks = config.coordination.max_ticks
 
+    # Message text unchanged for stderr; `event` names it for the run log.
     logger.info(
         "Starting exploration: %d drone(s), max %d ticks",
         len(mission.engine.drone_ids),
         max_ticks,
+        extra={
+            "event": "mission_started",
+            "drones": len(mission.engine.drone_ids),
+            "max_ticks": max_ticks,
+        },
     )
 
     viewer = _open_viewer(mission) if view else None
     if viewer is not None:
-        # Paint the starting frame before any work happens. The passive viewer
-        # only composites the scene on `sync()`, and the loop below does not
-        # reach its first one until a whole tick has run — with global
-        # allocation that tick floods a cost field per drone, so the window can
-        # sit blank long enough to look like it never opened.
+        # Paint the starting frame before any work happens. The passive
+        # viewer only composites the scene on `sync()`, and the loop below
+        # does not reach its first one until a whole tick has run — with
+        # global allocation that tick floods a cost field per drone, so the
+        # window can sit blank long enough to look like it never opened.
         viewer.sync()
         print("Viewer open — close the window to stop early.", flush=True)
 
-    # Counted here rather than in the coordinator: this is a diagnostic, and
-    # `coordination` should not carry state that only a debug flag reads.
-    path_log = PathLog() if visit_heatmaps else None
+    # Always recorded: the console shows every run's routes, and a run
+    # that was not recorded cannot be diagnosed after the fact. Counted
+    # here rather than in the coordinator: `coordination` should not carry
+    # state that only reporting reads.
+    path_log = PathLog()
     visits: dict[int, NDArray[np.int64]] = {}
     if visit_heatmaps:
         visits = {
@@ -414,33 +521,48 @@ def run_pipeline(
     try:
         while not master.is_complete and master.tick_count < max_ticks:
             mission.tick()
+            # A log line's `tick` is `master.tick_count` when it was
+            # emitted: ticks completed so far. That is the number the
+            # injector and the master pass on the events that carry a `tick`
+            # (the master increments after sense/assign/move), so stamped and
+            # passed ticks agree. Updated right after the tick so lines logged
+            # between ticks — the progress line below — carry the new count.
+            run_log.tick = master.tick_count
 
             for drone_id, counts in visits.items():
                 col, row = master.drone_states[drone_id].cell
                 counts[row, col] += 1
-            if path_log is not None:
-                path_log.record(master.drone_states)
+            path_log.record(master.drone_states)
 
             if viewer is not None and viewer.is_running:
                 viewer.sync()
                 time.sleep(view_delay)
 
             if master.tick_count % 50 == 0:
+                coverage = coverage_fraction(mission.mapper.grid)
                 logger.info(
                     "Tick %d/%d — coverage %.1f%%",
                     master.tick_count,
                     max_ticks,
-                    100.0 * coverage_fraction(mission.mapper.grid),
+                    100.0 * coverage,
+                    extra={"event": "mission_progress", "coverage": coverage},
                 )
 
-        output_dir.mkdir(parents=True, exist_ok=True)
         npz_path = output_dir / "map.npz"
         png_path = output_dir / "map.png"
         save_npz(mission.mapper.grid, npz_path)
         save_png(mission.mapper.grid, png_path, max_height=config.map.max_height)
+        written = [LOG_FILE, npz_path.name, png_path.name, "paths.json"]
 
-        if path_log is not None:
-            save_path_log(path_log, output_dir / "paths.json")
+        save_path_log(path_log, output_dir / "paths.json")
+        for drone_id, track in sorted(path_log.tracks.items()):
+            route_name = f"route_drone_{drone_id}.png"
+            save_route_png(track.route(), mission.mapper.grid, output_dir / route_name)
+            written.append(route_name)
+
+        # The printed diagnostics stay behind the flag that always printed
+        # them, so a plain run's stdout is unchanged.
+        if visit_heatmaps:
             print(
                 f"Division of labour: "
                 f"{path_log.exclusive_fraction():.1%} of visited cells "
@@ -451,19 +573,14 @@ def run_pipeline(
         for drone_id, counts in sorted(visits.items()):
             heatmap_path = output_dir / f"visits_drone_{drone_id}.png"
             save_visit_heatmap(counts, mission.mapper.grid, heatmap_path)
-            if path_log is not None:
-                route = path_log.tracks[drone_id].route()
-                save_route_png(
-                    route,
-                    mission.mapper.grid,
-                    output_dir / f"route_drone_{drone_id}.png",
-                )
-                stats = path_log.summary()[drone_id]
-                print(
-                    f"  route {len(route)} steps, "
-                    f"{stats['revisited_cells']} cells revisited, "
-                    f"longest revisit gap {stats['longest_gap']} ticks"
-                )
+            written.append(heatmap_path.name)
+            route = path_log.tracks[drone_id].route()
+            stats = path_log.summary()[drone_id]
+            print(
+                f"  route {len(route)} steps, "
+                f"{stats['revisited_cells']} cells revisited, "
+                f"longest revisit gap {stats['longest_gap']} ticks"
+            )
             print(
                 f"Drone {drone_id}: {int(np.sum(counts > 0))} cells visited, "
                 f"{int(np.sum(counts > 1))} revisited, "
@@ -475,16 +592,45 @@ def run_pipeline(
             coverage=coverage_fraction(mission.mapper.grid),
             blocked=master.is_blocked,
             unreachable_frontiers=master.unreachable_frontiers,
-            # `is_complete` is the coordinator's own terminal signal. If the
-            # loop stopped without it, the cap is what stopped us.
+            # `is_complete` is the coordinator's own terminal signal. If
+            # the loop stopped without it, the cap is what stopped us.
             tick_capped=not master.is_complete,
             npz_path=npz_path,
             png_path=png_path,
         )
 
-        # Keep the window open after the mission so the finished map can be
-        # inspected and orbited. Sync continuously (not just on state change)
-        # to keep the passive viewer responsive.
+        # Written before the post-mission viewer wait below, so the record
+        # exists while the operator inspects the map, and `wall_seconds`
+        # measures the mission rather than how long the window stayed open.
+        written.append(RUN_FILE)
+        write_run_record(
+            output_dir,
+            RunRecord(
+                started_at=started_at,
+                inputs=describe_inputs(
+                    config_path, config, len(mission.engine.drone_ids), view
+                ),
+                outputs=RunOutputs(
+                    ticks=result.ticks,
+                    coverage=result.coverage,
+                    blocked=result.blocked,
+                    unreachable_frontiers=result.unreachable_frontiers,
+                    tick_capped=result.tick_capped,
+                    succeeded=result.succeeded,
+                    wall_seconds=round(time.monotonic() - clock_start, 3),
+                    paths={
+                        str(drone_id): stats
+                        for drone_id, stats in path_log.summary().items()
+                    },
+                    event_counts=run_log.event_counts(),
+                    files=sorted(written),
+                ),
+            ),
+        )
+
+        # Keep the window open after the mission so the finished map can
+        # be inspected and orbited. Sync continuously (not just on state
+        # change) to keep the passive viewer responsive.
         if viewer is not None and viewer.is_running:
             print("Close the viewer window to exit.")
             while viewer.is_running:
@@ -580,9 +726,17 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    # The level is set on the stderr *handler*, not only on the root logger:
+    # the per-run file log lowers the `swarm_mapping` logger to INFO so it can
+    # record everything, and without a handler level that INFO would reach the
+    # terminal too. Same format, same lines on stderr as before.
+    level = logging.INFO if args.verbose else logging.WARNING
+    stderr_handler = logging.StreamHandler()
+    stderr_handler.setLevel(level)
     logging.basicConfig(
-        level=logging.INFO if args.verbose else logging.WARNING,
+        level=level,
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
+        handlers=[stderr_handler],
     )
 
     result = run_pipeline(
