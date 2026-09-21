@@ -73,10 +73,28 @@ def event_tick(records: list[logging.LogRecord], name: str) -> int:
     return int(record.tick)  # type: ignore[attr-defined]
 
 
+@pytest.fixture(scope="module")
+def silent_fly() -> tuple[Mission, list[logging.LogRecord]]:
+    """One shared `fly("silent")` run.
+
+    Used both by the parametrized "silent" case below and as the "first" run
+    in the determinism check, so the module flies 3 full missions instead of
+    4 (the plan's own ~20s estimate for this file was for one mission, not
+    four — fix round 1). Module-scoped: pytest computes it once, on whichever
+    test first requests it, and both parametrize instances of
+    `test_the_swarm_detects_the_failure_and_still_maps_the_room` request it,
+    even though only the "silent" instance reads the value — that is what
+    keeps it to a single shared run rather than one per test.
+    """
+    return fly("silent")
+
+
 @pytest.mark.parametrize("mode", ["silent", "stuck"])
-def test_the_swarm_detects_the_failure_and_still_maps_the_room(mode: str) -> None:
+def test_the_swarm_detects_the_failure_and_still_maps_the_room(
+    mode: str, silent_fly: tuple[Mission, list[logging.LogRecord]]
+) -> None:
     """Detection lands under the 2s KPI and the surviving swarm still covers 95%."""
-    mission, records = fly(mode)
+    mission, records = silent_fly if mode == "silent" else fly(mode)
     config = mission.config
 
     assert mission.master.drone_states[2].health is EXPECTED[mode]
@@ -89,9 +107,16 @@ def test_the_swarm_detects_the_failure_and_still_maps_the_room(mode: str) -> Non
     assert coverage_fraction(mission.mapper.grid) >= 0.95
 
 
-def test_a_failure_run_is_deterministic() -> None:
-    """Same config, same seed: identical tick count and identical event tick."""
-    first, first_events = fly("silent")
+def test_a_failure_run_is_deterministic(
+    silent_fly: tuple[Mission, list[logging.LogRecord]],
+) -> None:
+    """Same config, same seed: identical tick count and identical event tick.
+
+    `first` is the shared `silent_fly` run; `second` is a genuinely
+    independent re-run — the one call this test needs of its own, and the
+    only place two runs are actually compared against each other.
+    """
+    first, first_events = silent_fly
     second, second_events = fly("silent")
     assert first.master.tick_count == second.master.tick_count
     assert event_tick(first_events, "drone_failed") == event_tick(

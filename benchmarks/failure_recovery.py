@@ -34,6 +34,10 @@ Metrics, and why each is here:
   the drone was never commanded (nowhere to go), so nothing was there to
   detect, and that is correct behaviour, not a KPI miss. `kpi_met` is then
   omitted in favour of that string.
+- **delta_ticks / delta_t95 / delta_ticks_pct** — how much longer a failure
+  row's mission ran than the `large_indoor` healthy row (F11-R4: "the
+  benchmark reports by how much"). None on the healthy row itself, and None
+  for `delta_t95` if either side's `t95` never landed within `max_ticks`.
 - **wall_seconds** — how long the benchmark itself took to run this mission.
   Tier-3, measured but not committed; not to be confused with `latency_seconds`.
 
@@ -76,11 +80,46 @@ def _event_tick(
     return None
 
 
-def run(scenario: str) -> dict[str, Any]:
+def _deltas(row: dict[str, Any], healthy: dict[str, Any] | None) -> dict[str, Any]:
+    """How much longer this mission ran than the healthy reference (F11-R4).
+
+    Args:
+        row: This mission's own row so far (`ticks`, `t95`).
+        healthy: The `large_indoor` reference row, or None for that row itself.
+
+    Returns:
+        `delta_ticks`, `delta_t95`, `delta_ticks_pct` — all None when `healthy`
+        is None (this call *is* computing the healthy row) or when `t95`
+        never landed on one side of the comparison.
+    """
+    if healthy is None:
+        return {"delta_ticks": None, "delta_t95": None, "delta_ticks_pct": None}
+
+    delta_ticks = row["ticks"] - healthy["ticks"]
+    delta_t95 = (
+        row["t95"] - healthy["t95"]
+        if row["t95"] is not None and healthy["t95"] is not None
+        else None
+    )
+    delta_ticks_pct = (
+        round(100.0 * delta_ticks / healthy["ticks"], 1) if healthy["ticks"] else None
+    )
+    return {
+        "delta_ticks": delta_ticks,
+        "delta_t95": delta_t95,
+        "delta_ticks_pct": delta_ticks_pct,
+    }
+
+
+def run(scenario: str, healthy: dict[str, Any] | None = None) -> dict[str, Any]:
     """Fly one mission through `Mission.tick()` and collect its metrics.
 
     Args:
         scenario: Scenario directory name under `scenarios/`.
+        healthy: The `large_indoor` healthy reference row, already computed,
+            or None while computing that row itself. When given, the failure
+            row also reports `delta_ticks`, `delta_t95`, and `delta_ticks_pct`
+            against it (F11-R4: "the benchmark reports by how much").
 
     Returns:
         One row of the comparison table.
@@ -120,6 +159,7 @@ def run(scenario: str) -> dict[str, Any]:
         "tick_capped": not master.is_complete,
         "wall_seconds": round(wall_seconds, 1),
     }
+    row.update(_deltas(row, healthy))
 
     if not config.failures:
         # The healthy reference: nothing was injected, so there is nothing to
@@ -151,7 +191,11 @@ def run(scenario: str) -> dict[str, Any]:
         )
         return row
 
-    latency_ticks = declared_tick - (injected_tick or declared_tick)
+    # Not `injected_tick or declared_tick`: a failure injected at tick 0 is
+    # falsy and would silently collapse the fallback, reporting latency 0
+    # even when it should be `declared_tick - 0`.
+    baseline_tick = injected_tick if injected_tick is not None else declared_tick
+    latency_ticks = declared_tick - baseline_tick
     latency_seconds = latency_ticks * config.tick_seconds
     row.update(
         injected_tick=injected_tick,
@@ -165,17 +209,25 @@ def run(scenario: str) -> dict[str, Any]:
 
 
 def main() -> None:
-    """Run the three missions and write `benchmarks/failure_recovery.json`."""
+    """Run the three missions and write `benchmarks/failure_recovery.json`.
+
+    `large_indoor` runs first so its row is the `healthy` reference the two
+    failure rows report their `delta_*` fields against (F11-R4).
+    """
     rows: list[dict[str, Any]] = []
     header = (
         f"{'scenario':<18}{'ticks':>7}{'t@95%':>7}{'cov':>8}{'cap':>5}"
-        f"{'health':>8}{'lat(t)':>8}{'lat(s)':>8}{'kpi':>10}{'wall':>7}"
+        f"{'health':>8}{'lat(t)':>8}{'lat(s)':>8}{'kpi':>10}"
+        f"{'d.ticks':>9}{'d.t95':>7}{'d.tick%':>9}{'wall':>7}"
     )
     print(header, flush=True)
     print("-" * len(header), flush=True)
 
+    healthy: dict[str, Any] | None = None
     for scenario in SCENARIOS:
-        row = run(scenario)
+        row = run(scenario, healthy=healthy)
+        if scenario == "large_indoor":
+            healthy = row
         rows.append(row)
         t95 = "—" if row["t95"] is None else row["t95"]
         health = row["health"] or "—"
@@ -185,10 +237,16 @@ def main() -> None:
         )
         kpi = row["kpi_met"]
         kpi_str = "—" if kpi is None else (kpi if isinstance(kpi, str) else str(kpi))
+        d_ticks = "—" if row["delta_ticks"] is None else f"+{row['delta_ticks']}"
+        d_t95 = "—" if row["delta_t95"] is None else f"+{row['delta_t95']}"
+        d_pct = (
+            "—" if row["delta_ticks_pct"] is None else f"+{row['delta_ticks_pct']:.1f}%"
+        )
         print(
             f"{row['scenario']:<18}{row['ticks']:>7}{t95:>7}{row['coverage']:>8.2%}"
             f"{'Y' if row['tick_capped'] else 'N':>5}{health:>8}{lat_t:>8}"
-            f"{lat_s:>8}{kpi_str:>10}{row['wall_seconds']:>6.0f}s",
+            f"{lat_s:>8}{kpi_str:>10}{d_ticks:>9}{d_t95:>7}{d_pct:>9}"
+            f"{row['wall_seconds']:>6.0f}s",
             flush=True,
         )
 
