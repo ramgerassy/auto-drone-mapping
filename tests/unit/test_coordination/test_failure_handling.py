@@ -211,3 +211,58 @@ class TestReclaim:
                 col, row = master.drone_states[drone_id].cell
                 gap = math.hypot(col - wreck[0], row - wreck[1])
                 assert gap >= MIN_SEPARATION_CELLS
+
+
+class TestLost:
+    """Plan tests 1-3: silence."""
+
+    def test_a_silent_drone_maps_nothing_from_the_tick_it_goes_silent(
+        self, scene: Path
+    ) -> None:
+        """Before it is declared, not only after; the healthy twin is the control."""
+        healthy, _, healthy_map = build_master(scene, {0: (0.0, 0.0)})
+        healthy.tick()
+        assert known_cells(healthy_map) > 0
+
+        master, engine, mapper = build_master(scene, {0: (0.0, 0.0)})
+        engine.fail_drone(0, FailureMode.SILENT)
+        run(master, 2)  # still ACTIVE: the timeout is 3
+        assert master.drone_states[0].health is DroneHealth.ACTIVE
+        assert known_cells(mapper) == 0
+
+    def test_lost_is_declared_on_the_timeout_th_missed_heartbeat(
+        self, scene: Path
+    ) -> None:
+        """Not one tick early, not one late."""
+        master, engine, _ = build_master(
+            scene, {0: (-1.5, 0.0), 1: (1.5, 0.0)}, heartbeat_timeout_ticks=3
+        )
+        engine.fail_drone(1, FailureMode.SILENT)
+        run(master, 2)
+        assert master.drone_states[1].health is DroneHealth.ACTIVE
+        master.tick()
+        assert master.drone_states[1].health is DroneHealth.LOST
+
+    def test_a_silent_drone_is_not_mistaken_for_stuck(self, scene: Path) -> None:
+        """No telemetry is no motion evidence (F10-R3), even at a hair-trigger."""
+        master, engine, _ = build_master(
+            scene,
+            {0: (-1.5, 0.0), 1: (1.5, 0.0)},
+            heartbeat_timeout_ticks=3,
+            stuck_timeout_ticks=1,
+        )
+        engine.fail_drone(1, FailureMode.SILENT)
+        run(master, 3)
+        assert master.drone_states[1].health is DroneHealth.LOST
+
+    def test_a_healthy_swarm_is_never_declared_lost(
+        self, scene: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A full healthy mission declares nobody."""
+        caplog.set_level(logging.INFO)
+        master, _, _ = build_master(
+            scene, {0: (-1.5, -1.5), 1: (1.5, -1.5), 2: (0.0, 1.5)}
+        )
+        run_to_end(master)
+        assert all(s.health is DroneHealth.ACTIVE for s in master.drone_states.values())
+        assert events(caplog, "drone_failed") == []
