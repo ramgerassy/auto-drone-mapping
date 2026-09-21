@@ -18,7 +18,7 @@ A cooperative swarm of 1–5 drones that explore and map unknown environments in
 
 These shape every decision. Don't propose changes to them without flagging it explicitly.
 
-- **Python 3.11+.** No other languages.
+- **Python 3.13+.** No other languages.
 - **MuJoCo only.** Don't suggest Gazebo, PyBullet, Isaac, etc.
 - **Ground-truth localization.** Drone pose comes from MuJoCo state. No SLAM. The `Localizer` interface exists so SLAM could be added later, but the implementation is `GroundTruthLocalizer`.
 - **2.5D mapping only.** 2D occupancy grid + per-cell height. No 3D voxels. No point clouds.
@@ -48,19 +48,31 @@ Seven modules with one-way dependencies. Each module has a defined responsibilit
 Always one-way. Anything below depends only on things further down, never up:
 
 ```
+app (operator console + scenario validation; nothing imports it)
+    ├── cli (validation reuses build_mission; runs launch the CLI as a subprocess)
+    ├── records (reads run history)
+    ├── config
+    └── simulation (spawn contact check)
+cli (composition root)
+    ├── records
+    └── every domain module below
 coordination
     ├── planning
-    └── simulation (for poses and commands)
+    ├── mapping (holds the Mapper)
+    ├── perception (calls Sensor.scan)
+    └── simulation (for poses, heartbeats and commands)
 planning
     └── mapping (read-only)
-perception
-    ├── simulation (for ray-casts)
-    └── mapping (writes observations)
 mapping
+    └── perception (types only: ScanResult / RayObservation)
+perception
+    └── simulation (for ray-casts and poses)
+simulation
     └── (no dependencies on other domain modules)
 visualization
-    ├── mapping (read-only)
-    └── coordination (read-only)
+    └── (no domain modules; wraps MuJoCo's model/data directly)
+records
+    └── (no dependencies; serialises plain data)
 config
     └── (no dependencies; everyone reads it at startup)
 ```
@@ -218,8 +230,10 @@ If I suggest any of these, push back:
 
 Update this section each sprint so Claude Code knows what's in-flight.
 
-**Sprint 2 — Multi-drone exploration (in progress).** Goal: multiple drones with a real planner explore a real environment using frontier-based exploration. Adds `planning` module (frontier detection, `NearestFrontier` strategy, A\*), extends `coordination` (frontier assignment, claimed-frontiers list, spatial spreading penalty), extends `mapping` with a `get_frontiers()` API. Adds the large indoor environment. Out of scope: wind, failure handling, outdoor, live dashboard.
+**Sprint 3 — Robustness (in progress).** Goal: system handles drone failure. Adds failure handling to `coordination` (heartbeats, stuck-drone detection, frontier reclaim), and the live `visualization` dashboard. Adds failure-injection scenarios. Out of scope: acceptance tests, CI, second FrontierStrategy.
 
-Current focus: `planning` module — frontier detection algorithm, `FrontierStrategy` interface with `NearestFrontier` implementation, and A\* path planner.
+Current focus: `coordination` — heartbeat and reassignment logic — plus scenario asset for failure injection.
 
-**Sprint 1 (complete).** One drone follows hardcoded patrol path in small indoor scenario, produces `.npz` + `.png` map. Full data pipeline works end-to-end. Modules built: `config`, `simulation` (with `Localizer` + `RayCaster`), `perception` (rangefinder + world-frame observations), `mapping` (occupancy grid + Bayesian update), `coordination` (tick loop with hardcoded path).
+**Sprint 2 (complete).** Frontier-based multi-drone exploration in large indoor scenario. Added `planning` module (frontier detection, `NearestFrontier` + `PathPlanner`), extended `coordination` (assignment, claimed-frontiers list, spatial spreading), extended `mapping` with `get_frontiers()`.
+
+**Sprint 1 (complete).** One drone follows hardcoded patrol in small indoor. Full data pipeline works end-to-end. Modules built: `config`, `simulation`, `perception`, `mapping`, `coordination` (tick loop only).

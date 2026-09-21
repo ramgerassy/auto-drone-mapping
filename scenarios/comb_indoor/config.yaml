@@ -24,6 +24,7 @@ drones:
     - [-13.0, 0.0, 1.0]
     - [13.0, 0.0, 1.0]
   altitude: 0.3          # low, so a horizontal ray sees anything taller
+  cruise_speed: 1.0      # m/s — one cell per tick; see docs/sprint-3-plan.md D1
 
 sensor:
   # Same Slamtec RPLIDAR A2M8 model as the other scenarios: 360-degree 2D
@@ -92,3 +93,5 @@ coordination:
                               # other half of the anti-thrash experiment.
   no_progress_ticks: 800   # 200 truncated a mission by 26 points; see progress.md
   return_to_base_ticks: 150  # idle this long -> fly home and park
+  heartbeat_timeout_ticks: 3  # missed heartbeats before a drone is declared lost
+  stuck_timeout_ticks: 3      # granted moves that did not happen before "stuck"

@@ -6,40 +6,109 @@ on:
   pull_request:
     branches: [main]
 
+# The suite runs as parallel jobs rather than sequential steps. Run one after
+# the other, Regression (2:42) and Progression (3:13) put the per-push gate at
+# 6 min 15 s against CLAUDE.md's 5-minute budget once Sprint 3's recovery tests
+# landed. In parallel, wall-clock is the slower job plus setup, and no test is
+# dropped from any push. See docs/sprint-3-plan.md, Task 0, for why both labels
+# run on every push, and why the split exists at all: a red job says whether
+# shipped behaviour broke (Regression) or in-flight work isn't done
+# (Progression).
+#
+# Every job repeats the same four setup steps on purpose: each job is a fresh
+# runner, and the uv cache keeps the repeat cheap.
+
 jobs:
-  lint-and-test:
+  lint:
+    name: Lint and types
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - name: Install uv
         uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
-
       - name: Set up Python
         run: uv python install 3.13
-
       - name: Install dependencies
         run: uv sync
-
       - name: Ruff check
-        run: uv run ruff check src/ tests/
-
+        run: uv run ruff check src/ tests/ benchmarks/
       - name: Ruff format check
-        run: uv run ruff format --check src/ tests/
-
+        run: uv run ruff format --check src/ tests/ benchmarks/
       - name: Mypy
         run: uv run mypy src/
 
-      # Per-commit gate: the accumulated must-not-break suite (+ fast sanity).
-      # Empty until Sprint 2 ships, so `or sanity` keeps it from erroring on an
-      # empty selection and always runs the quick cross-module smoke.
-      - name: Regression + sanity (every push)
-        if: github.event_name == 'push'
-        run: uv run pytest -m "regression or sanity" --cov=swarm_mapping --cov-report=term-missing -v
+  regression:
+    name: Regression — prior sprints, must not break
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Set up Python
+        run: uv python install 3.13
+      - name: Install dependencies
+        run: uv sync
+      - name: Regression tests
+        run: uv run pytest -m "regression and not acceptance" -v
 
-      # PR-to-main gate: the current sprint's work (+ sanity).
-      - name: Progression + sanity (pull request)
-        if: github.event_name == 'pull_request'
-        run: uv run pytest -m "progression or sanity" --cov=swarm_mapping --cov-report=term-missing -v
+  progression:
+    name: Progression — current sprint, work in flight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Set up Python
+        run: uv python install 3.13
+      - name: Install dependencies
+        run: uv sync
+      # Exit code 5 is pytest's "no tests collected": a sprint that has not
+      # written its first test yet has an empty progression set, which is fine.
+      - name: Progression tests
+        run: uv run pytest -m "progression and not acceptance" -v || [ $? -eq 5 ]
+
+  # Coverage is collected on PRs to main only, where the >=70% target is judged.
+  # Tracing roughly doubles runtime, and pushes only need to know whether
+  # anything broke. It runs the whole non-acceptance suite in ONE job: coverage
+  # cannot be appended across separate runners, so a per-label figure would
+  # under-report both.
+  coverage:
+    name: Coverage (pull request to main)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Set up Python
+        run: uv python install 3.13
+      - name: Install dependencies
+        run: uv sync
+      - name: Coverage over the non-acceptance suite
+        run: uv run pytest -m "not acceptance" --cov=swarm_mapping --cov-report=term-missing -q
+
+  # Full-scenario runs: minutes, not seconds. PRs to main only, per CLAUDE.md.
+  acceptance:
+    name: Acceptance (pull request to main)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Set up Python
+        run: uv python install 3.13
+      - name: Install dependencies
+        run: uv sync
+      - name: Acceptance tests
+        run: uv run pytest -m acceptance -v

@@ -7,6 +7,7 @@ live viewer needs a display, so it is exercised manually rather than in CI.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -14,13 +15,20 @@ import pytest
 
 from swarm_mapping.cli import (
     MissionResult,
+    build_mission,
     coverage_fraction,
     select_start_positions,
 )
+from swarm_mapping.config.loader import load_config
+from swarm_mapping.config.schema import FailureSettings, ScenarioConfig
 from swarm_mapping.mapping.grid import OccupancyGrid
 from swarm_mapping.mapping.types import MapConfig
 
 pytestmark = pytest.mark.sprint(2)  # tests introduced in Sprint 2
+
+SMALL_INDOOR = (
+    Path(__file__).resolve().parents[2] / "scenarios" / "small_indoor" / "config.yaml"
+)
 
 POSITIONS = (
     (0.0, 0.0, 1.0),
@@ -81,14 +89,17 @@ class TestMissionSucceeded:
     Failing on it would exit non-zero on the happy path.
     """
 
-    def result(self, *, blocked: bool, tick_capped: bool) -> MissionResult:
-        """Build a MissionResult varying only the two outcome flags."""
+    def result(
+        self, *, blocked: bool, tick_capped: bool, swarm_lost: bool = False
+    ) -> MissionResult:
+        """Build a MissionResult varying only the three outcome flags."""
         return MissionResult(
             ticks=100,
             coverage=0.98,
             blocked=blocked,
             unreachable_frontiers=3 if blocked else 0,
             tick_capped=tick_capped,
+            swarm_lost=swarm_lost,
             npz_path=Path("map.npz"),
             png_path=Path("map.png"),
         )
@@ -104,6 +115,24 @@ class TestMissionSucceeded:
     def test_a_clean_run_succeeds(self) -> None:
         """Nothing wrong, nothing reported."""
         assert self.result(blocked=False, tick_capped=False).succeeded
+
+    def test_losing_the_whole_swarm_is_a_failure_even_without_a_tick_cap(
+        self,
+    ) -> None:
+        """A wiped-out swarm did not do its job.
+
+        A coordinator with no drones left reports `is_complete=True`, not a
+        tick cap — `swarm_lost` is the only signal that catches it.
+        """
+        assert not self.result(
+            blocked=False, tick_capped=False, swarm_lost=True
+        ).succeeded
+
+    def test_swarm_lost_and_tick_capped_together_is_still_a_failure(self) -> None:
+        """Either reason alone fails the run; both together still does."""
+        assert not self.result(
+            blocked=False, tick_capped=True, swarm_lost=True
+        ).succeeded
 
 
 class TestCoverageFraction:
@@ -134,3 +163,27 @@ class TestCoverageFraction:
         grid.log_odds[0, :] = np.log(0.55 / 0.45)
 
         assert coverage_fraction(grid) == 0.0
+
+
+@pytest.mark.sprint(3)
+class TestFailureWiring:
+    """The schedule reaches the engine through Mission.tick(), not the master."""
+
+    @staticmethod
+    def _config(*failures: FailureSettings) -> ScenarioConfig:
+        return replace(load_config(SMALL_INDOOR), failures=failures)
+
+    def test_mission_tick_applies_a_failure_on_its_tick(self) -> None:
+        """A failure lands on its scheduled tick, before the master runs it."""
+        mission = build_mission(self._config(FailureSettings(0, 2, "silent")), drones=1)
+        mission.tick()  # tick 0
+        mission.tick()  # tick 1
+        assert mission.engine.heartbeat(0)
+        mission.tick()  # tick 2 — applied before the master runs
+        assert not mission.engine.heartbeat(0)
+
+    def test_a_failure_for_a_dropped_drone_fails_fast(self) -> None:
+        """Decision D6, end to end through --drones."""
+        config = self._config(FailureSettings(1, 10, "stuck"))
+        with pytest.raises(ValueError, match="drone 1"):
+            build_mission(config, drones=1)

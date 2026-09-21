@@ -67,6 +67,8 @@ def build_master(
     min_separation: float = MIN_SEPARATION,
     resolution: float = RESOLUTION,
     return_to_base_ticks: int = 0,
+    heartbeat_timeout_ticks: int = 3,
+    stuck_timeout_ticks: int = 3,
 ) -> tuple[CentralizedMaster, SimulationEngine, Mapper]:
     """Wire an engine, sensor, mapper and master over the tiny room."""
     positions = {
@@ -97,6 +99,8 @@ def build_master(
         min_separation=min_separation,
         max_wait_ticks=MAX_WAIT,
         return_to_base_ticks=return_to_base_ticks,
+        heartbeat_timeout_ticks=heartbeat_timeout_ticks,
+        stuck_timeout_ticks=stuck_timeout_ticks,
     )
     return master, engine, mapper
 

@@ -150,10 +150,16 @@ class DroneSettings:
         start_positions: One (x, y, z) world position per drone, in order.
             Drone ids are the indices of this sequence.
         altitude: Flight height in metres. Drones stay in one horizontal plane.
+        cruise_speed: Cruise speed in m/s. One tick moves a drone one cell, so
+            this is what gives a tick a duration:
+            `tick_seconds = map.resolution / cruise_speed`. The simulation
+            itself has no clock — `mj_step` is never called — so without
+            this, time-based KPIs have no unit.
     """
 
     start_positions: tuple[tuple[float, float, float], ...]
     altitude: float
+    cruise_speed: float
 
     @property
     def count(self) -> int:
@@ -313,6 +319,10 @@ class CoordinationSettings:
             find can hold assignments indefinitely and never satisfy "every
             drone unassigned". Measured on large_indoor: coverage is flat from
             tick 2000 while the mission runs to its cap. 0 disables the check.
+        heartbeat_timeout_ticks: Consecutive missed heartbeats before a drone
+            is declared lost. At least 1: detection cannot be switched off.
+        stuck_timeout_ticks: Consecutive granted-but-unrealized moves before a
+            drone is declared stuck. Waiting to yield never counts. At least 1.
     """
 
     min_separation: float
@@ -322,6 +332,28 @@ class CoordinationSettings:
     assignment: str
     no_progress_ticks: int
     return_to_base_ticks: int
+    heartbeat_timeout_ticks: int
+    stuck_timeout_ticks: int
+
+
+# Kept as strings: `config` depends on nothing, so the mapping onto
+# `simulation.FailureMode` happens in `cli`.
+_FAILURE_MODES = ("silent", "stuck")
+
+
+@dataclass(frozen=True)
+class FailureSettings:
+    """One scripted drone failure.
+
+    Attributes:
+        drone_id: Which drone fails — an index into `drones.start_positions`.
+        tick: The tick it fails at, applied before that tick runs.
+        mode: "silent" or "stuck". See `simulation.FailureMode`.
+    """
+
+    drone_id: int
+    tick: int
+    mode: str
 
 
 @dataclass(frozen=True)
@@ -335,6 +367,8 @@ class ScenarioConfig:
         map: Occupancy grid extent and shading (the YAML `map:` section).
         planning: Planner and frontier-selection parameters.
         coordination: Mission orchestration parameters.
+        failures: Scripted failures, ordered by (tick, drone). Empty for a
+            nominal scenario.
     """
 
     scene_path: str
@@ -343,6 +377,16 @@ class ScenarioConfig:
     map: MapSettings
     planning: PlanningSettings
     coordination: CoordinationSettings
+    failures: tuple[FailureSettings, ...] = ()
+
+    @property
+    def tick_seconds(self) -> float:
+        """Nominal duration of one tick, in seconds.
+
+        Derived rather than stored, so it can never disagree with the grid
+        resolution or the cruise speed it comes from.
+        """
+        return self.map.resolution / self.drones.cruise_speed
 
 
 def _parse_start_positions(
@@ -411,6 +455,64 @@ def _check_positions_fit_grid(
             raise ValueError(msg)
 
 
+def _parse_failures(
+    raw: dict[str, Any], drone_count: int
+) -> tuple[FailureSettings, ...]:
+    """Parse the optional `failures:` section.
+
+    Args:
+        raw: The whole config document.
+        drone_count: Drones in the scenario, bounding `drone`.
+
+    Returns:
+        The schedule sorted by (tick, drone_id), or () when the section is
+        absent.
+
+    Raises:
+        ValueError: On any malformed entry; the message names
+            `failures[i].<key>`.
+    """
+    if "failures" not in raw:
+        return ()
+    entries = raw["failures"]
+    if not isinstance(entries, list):
+        msg = f"'failures' must be a list, got {type(entries).__name__}"
+        raise ValueError(msg)
+
+    parsed: list[FailureSettings] = []
+    scheduled: set[int] = set()  # membership only; never iterated
+    for index, entry in enumerate(entries):
+        name = f"failures[{index}]"
+        if not isinstance(entry, dict):
+            msg = f"'{name}' must be a mapping, got {type(entry).__name__}"
+            raise ValueError(msg)
+        drone_id = _non_negative_int(entry, name, "drone")
+        if drone_id >= drone_count:
+            msg = (
+                f"'{name}.drone' is {drone_id}, but the scenario has "
+                f"{drone_count} drone(s), ids 0-{drone_count - 1}"
+            )
+            raise ValueError(msg)
+        if drone_id in scheduled:
+            msg = (
+                f"'{name}.drone': drone {drone_id} is scheduled twice; "
+                "a drone fails once"
+            )
+            raise ValueError(msg)
+        scheduled.add(drone_id)
+        tick = _non_negative_int(entry, name, "tick")
+        mode = _field(entry, name, "mode")
+        if mode not in _FAILURE_MODES:
+            msg = (
+                f"'{name}.mode' must be one of {', '.join(_FAILURE_MODES)}, "
+                f"got {mode!r}"
+            )
+            raise ValueError(msg)
+        parsed.append(FailureSettings(drone_id=drone_id, tick=tick, mode=mode))
+
+    return tuple(sorted(parsed, key=lambda f: (f.tick, f.drone_id)))
+
+
 def parse_config(raw: Any) -> ScenarioConfig:
     """Validate a parsed YAML document and return a typed scenario config.
 
@@ -455,12 +557,14 @@ def parse_config(raw: Any) -> ScenarioConfig:
 
     start_positions = _parse_start_positions(drones_section)
     _check_positions_fit_grid(start_positions, map_settings)
+    failures = _parse_failures(raw, len(start_positions))
 
     return ScenarioConfig(
         scene_path=scene_path,
         drones=DroneSettings(
             start_positions=start_positions,
             altitude=_number(drones_section, "drones", "altitude"),
+            cruise_speed=_positive(drones_section, "drones", "cruise_speed"),
         ),
         sensor=SensorSettings(
             num_rays=_positive_int(sensor_section, "sensor", "num_rays"),
@@ -506,5 +610,12 @@ def parse_config(raw: Any) -> ScenarioConfig:
             return_to_base_ticks=_non_negative_int(
                 coordination_section, "coordination", "return_to_base_ticks"
             ),
+            heartbeat_timeout_ticks=_positive_int(
+                coordination_section, "coordination", "heartbeat_timeout_ticks"
+            ),
+            stuck_timeout_ticks=_positive_int(
+                coordination_section, "coordination", "stuck_timeout_ticks"
+            ),
         ),
+        failures=failures,
     )

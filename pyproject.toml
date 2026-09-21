@@ -11,8 +11,14 @@ dependencies = [
     "pyyaml>=6.0",
 ]
 
+[project.optional-dependencies]
+# The operator console (Feature 13). Optional so the simulator and CI never
+# install it: `uv sync --extra ui`.
+ui = ["streamlit>=1.40"]
+
 [project.scripts]
 swarm-mapping = "swarm_mapping.cli:main"
+swarm-console = "swarm_mapping.app.launch:main"
 
 [dependency-groups]
 dev = [
@@ -64,16 +70,23 @@ packages = ["swarm_mapping"]
 module = ["mujoco.*", "yaml"]
 ignore_missing_imports = true
 
+# The console's optional extra (and pandas, which streamlit brings). CI syncs
+# without it, so mypy there must accept the imports as missing; locally, with
+# the extra, streamlit's own hints apply. pandas ships no stubs either way.
+[[tool.mypy.overrides]]
+module = ["streamlit", "streamlit.*", "pandas", "pandas.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--strict-markers"
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "sprint(n): sprint the test was introduced in; drives the regression/progression split (see tests/conftest.py)",
-    "regression: derived from sprint(n) — prior-sprint tests that must not break (PR gate)",
-    "progression: derived from sprint(n) — current-sprint tests (per-commit gate)",
+    "regression: derived from sprint(n) — prior sprints; shipped behaviour that must not break. Runs on every push (see tests/conftest.py)",
+    "progression: derived from sprint(n) — current sprint; work in flight. Runs on every push (see tests/conftest.py)",
     "sanity: fast, minimal cross-module health check; keep it small and quick",
-    "acceptance: full-scenario runs with tolerance bands; minutes, not seconds. Selects COST, not era — acceptance tests still carry sprint(n). CI runs them on PRs to main (progression gate), never on push. Deselect locally with -m 'not acceptance'.",
+    "acceptance: full-scenario runs with tolerance bands; minutes, not seconds. Selects COST, not era — acceptance tests still carry sprint(n). CI runs them as their own step on PRs to main, never on push. Deselect locally with -m 'not acceptance'.",
 ]
 
 [tool.hatch.build.targets.wheel]
