@@ -32,17 +32,27 @@ jobs:
       - name: Mypy
         run: uv run mypy src/
 
+      # Coverage tracing roughly doubles the suite's runtime on CI runners, which
+      # put the per-push gate at 6 min 9 s against CLAUDE.md's 5-minute budget.
+      # It is collected on PRs to main only: that is where the >=70% coverage
+      # target is judged, and pushes only need to know whether anything broke.
+      - name: Coverage flags (PRs to main only)
+        if: github.event_name == 'pull_request'
+        run: |
+          echo "COV=--cov=swarm_mapping --cov-report=term-missing" >> "$GITHUB_ENV"
+          echo "COV_APPEND=--cov-append" >> "$GITHUB_ENV"
+
       # Both labels run on every push, as separate steps, so a red build says
       # whether shipped behaviour broke (Regression) or in-flight work isn't
       # done (Progression). Until Sprint 3 each gate ran only one label and no
       # gate ever ran the whole suite — see docs/sprint-3-plan.md, Task 0.
       - name: Regression — prior sprints, must not break
-        run: uv run pytest -m "regression and not acceptance" --cov=swarm_mapping --cov-report=term-missing -v
+        run: uv run pytest -m "regression and not acceptance" $COV -v
 
       # Exit code 5 is pytest's "no tests collected": a sprint that has not
       # written its first test yet has an empty progression set, which is fine.
       - name: Progression — current sprint, work in flight
-        run: uv run pytest -m "progression and not acceptance" --cov=swarm_mapping --cov-append --cov-report=term-missing -v || [ $? -eq 5 ]
+        run: uv run pytest -m "progression and not acceptance" $COV $COV_APPEND -v || [ $? -eq 5 ]
 
       # Full-scenario runs: minutes, not seconds. PRs to main only, per CLAUDE.md.
       - name: Acceptance (pull request to main)
