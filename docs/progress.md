@@ -1651,3 +1651,210 @@ an instrument instead of building X. It cost a day and closed a question that
 had already consumed three attempts. The generalisation worth keeping: **an
 upper bound is usually cheaper to measure than a feature is to build, and it
 can only be measured before the feature exists.**
+
+---
+
+## 2026-09-21 — Sprint 3 — the swarm survives losing a drone
+
+A drone can now fail mid-mission — go silent, or stop responding to motion
+commands — and the master notices from symptoms alone, releases its frontier,
+routes around the wreck and finishes the map. The mechanics are in
+`design.md` §5.8–5.9. This entry records what the code and git history do not:
+why a few choices went the way they did, and what the reviews caught.
+
+### D1 — a tick had no duration
+
+The Tier-2 KPI says "< 2 s". Nothing in the system had seconds. `tick()` never
+advances MuJoCo time — `mj_step` is never called — and a step is a one-cell
+teleport, so a tick is a unit of *decision*, not of time. Measuring the KPI
+meant first deciding what a second is.
+
+`drones.cruise_speed` (m/s, required) is the answer, and
+`tick_seconds = map.resolution / cruise_speed` is derived rather than stored so
+it can never disagree with the grid. At 1.0 m/s on `large_indoor`'s 0.2 m cells
+a tick is 0.2 s, so the KPI is < 10 ticks. Timeouts stay in ticks, like every
+other `*_ticks` setting.
+
+Worth being plain about what this buys: the seconds are **nominal**. They are a
+configured speed applied to a grid step, not a measurement of anything
+physical. A latency of "0.40 s" means "2 ticks at the speed we said drones fly".
+That is the honest unit for a teleporting simulator, and it is not the same
+claim as a real swarm reassigning in 0.4 s.
+
+### Observe first, and what it bought
+
+The tick used to be sense → assign → move. Failure detection needed a place,
+and the obvious one — at the end of `_move`, right where the unrealized move is
+seen — was wrong. A drone declared there would release its frontier *after*
+that tick's assignment pass, adding a tick of latency to every reassignment.
+
+So declarations moved into a new first phase: **observe → sense → assign →
+move**. A drone declared on tick *t* releases its frontier before tick *t*'s
+assignment runs, and a teammate can take it the same tick. That is also why
+detection latency and reassignment latency are the same number in this system.
+
+### The master trusted its own commands
+
+Stuck detection needs the master to notice that a commanded move did not
+happen. It could not: `_move` teleported the drone and wrote the *commanded*
+cell straight into `DroneState.cell`. The master's belief about where a drone
+was came from its own command log, not from the `Localizer`.
+
+That was a latent bug independent of this sprint — it had never bitten only
+because a healthy teleport always lands. It is fixed by reading the pose back
+after every move and letting the state follow it. The zero-regression gate was
+that this must change nothing for a healthy swarm, and it changed nothing:
+
+```
+small_indoor   drones   ticks   coverage   map hash (local)
+before              1     498     0.9799   09f950b017aff423
+                    2     254     0.9822   4c8826303df6733d
+                    3     197     0.9831   ced633862f48d60e
+after          identical on all three
+```
+
+CI asserts the ticks and coverage; the hash is checked locally only, because
+float results can differ across CPUs.
+
+### The CI gate had never run the whole suite
+
+Found while promoting Sprint 2's tests to regression, before any feature work.
+`CURRENT_SPRINT` was still `2` — never bumped when Sprint 2 closed, nor after
+2.5 — so all 283 of their tests were still "progression", and **every push this
+sprint had run 103 of the 365 tests**. Worse, the push gate ran
+`regression or sanity` and the PR gate ran `progression or sanity`: the two
+*split* the suite, and no gate had ever run all of it. It went unnoticed because
+Sprint 1 is small.
+
+The fix makes the labels label rather than select: both run on every push as
+separate steps (358 regression tests at the switch), acceptance on PRs to
+`main`. A test tagged with a sprint ahead of `CURRENT_SPRINT` now fails
+collection with a message to bump it, which is exactly when a forgotten bump
+first shows. It would have caught this the first time a `sprint(3)` test was
+written.
+
+Running everything had a price, and fixing it took three tries. Each figure
+names its run, because different runs measured different trees:
+
+```
+configuration                         run                         measured
+one job, coverage on every push       sprint-3 35643865761        regression step 6:09
+one job, coverage on PRs only (#24)   #24 branch 35652334588      regression 358 in 2:42,
+                                      (before Feature 13 merged)  progression 150 in 1:39, job 4:37
+same, after Feature 11 merged         sprint-3 35653954803        regression 358 in 2:42,
+                                                                  progression 202 in 3:13, job 6:15
+parallel jobs (#27)                   #27 branch 35654993679      lint 0:15, regression 2:49,
+                                                                  progression 3:27, run 3:30
+```
+
+Moving coverage to PRs (#24) got inside the 5-minute budget, and the margin
+lasted one feature: Feature 11's ~54 s integration module pushed it back over.
+The user decided to split the push gate into parallel jobs (#27): Lint and
+types, Regression and Progression on every push, with Coverage (one job over
+the whole non-acceptance suite, because coverage cannot be appended across
+runners) and Acceptance on PRs to `main`. That brings it to 3:30 with every
+non-acceptance test still running on every push. Progression is now the
+critical path, so the current sprint's tests set the push time.
+
+Also found while writing this entry: the pre-commit hook ran
+`regression or sanity`, which after the bump had quietly grown to include the
+7 acceptance tests — minutes on every commit. Same root cause as the CI gate:
+a selection written when the regression label held no acceptance tests. Fixed in PR #26,
+which makes it `(regression or sanity) and not acceptance`.
+
+Also decided: the console's Streamlit UI tests are not CI-gated. The console is an
+optional extra, not core — it needs to work, not to gate a push — so CI
+installs without the `ui` extra and those tests skip there, while the
+plain-Python console tests still run.
+
+### Three plan tests that could not fail
+
+The Feature 10 test list was written before the code, and review found three
+of those tests weaker than their names. All three were weaknesses of the plan,
+not of the implementation.
+
+- **Test 7 — "the released frontier can be handed out the same tick".** The
+  plan's test asserted that the frontier was *eventually* taken over or
+  mapped, which passes whatever the tick order. Replaced by a test that finds
+  a real same-tick handout — start positions found by brute-force search over
+  a small room, so no private state is poked — and asserts that on the
+  declaring tick the failed drone holds nothing and the only holder of its
+  frontier is an `ACTIVE` teammate. Moving `_observe` after `_assign` now
+  fails it.
+- **Test 11 — "a wreck in a corridor is passed without thrashing".** The plan's
+  test used an open room and checked clearance only; there was no corridor and
+  no bound. Added a room split by a wall with a single gap and a wreck in the
+  gap. Measured: 4 target changes after the declaration, the mission finishes
+  on tick 26, and the surviving drone crosses at Chebyshev distance 3. With the
+  overlay disabled, the same run hits the 600-tick cap. Candidly, the
+  target-change bound (8, twice the measured count) barely discriminates —
+  3–9 changes with the overlay, 5–9 without, across configurations. The path
+  clearance and finish-before-the-cap assertions carry the test; the bound only
+  guards against runaway thrash.
+- **Test 8 — "a failed drone is never sent home".** For a stuck drone this was
+  undetectable as written. Now checked by event: with `return_to_base_ticks: 1`,
+  no `returning_to_base` record names the failed drone from its `drone_failed`
+  record onward, while a healthy twin run shows the same drone *is* sent home.
+  The mutation run found something worth recording: the test fails only when
+  **both** the `ACTIVE`-only guard and the wreck overlay are removed — the
+  overlay alone puts the wreck's own cell inside its footprint, so no home
+  route exists. The guard is defence in depth, and no test isolates it.
+
+One more, from a different test: "a yielding drone is never stuck" passed
+vacuously at the plan's 0.75 m start spacing, because no drone ever yielded
+(0 wait-ticks). At 0.5 m there are 9. The test keeps an assertion that a wait
+actually happened.
+
+The pattern is Sprint 2's (`design.md` §7.3) in a new form: a test written from
+a *description* of the behaviour asserts something the behaviour implies, and
+the implication is often true for other reasons too.
+
+### Measured: the latency KPI and what losing a drone costs
+
+`benchmarks/failure_recovery.py`, `large_indoor`, 5 drones, drone 1 failed at
+tick 300 (mid-mission: the healthy swarm reaches 95% at tick 517):
+
+```
+scenario            ticks  t@95%     cov   health  latency
+large_indoor          894    517  97.37%        —        —
+failure_injection    1289    579  97.37%     lost   2 ticks = 0.40 s
+failure_stuck        1369    579  97.37%    stuck   3 ticks = 0.60 s
+```
+
+**The KPI is met in both modes**, and coverage with a drone lost equals the
+healthy run. The healthy row reproduces the known 894 / 517 exactly, which is
+an independent check that the scenario files and the tick derivation are
+right.
+
+The cost is mission length: **+44%** total ticks for silent, **+53%** for stuck,
+and **+12%** time to 95%. The swarm reaches the coverage target nearly on time
+and pays in the tail. Stuck costs more than silent here; nothing was measured
+that would separate the causes, so this entry does not guess at one.
+
+On `small_indoor` (3 drones, drone 2 failed at tick 40) the same recovery is
+guarded on every push. It measured 2 ticks silent and 3 ticks stuck (0.1 s
+ticks there); what it asserts is latency under 2 s and coverage ≥95%. The
+module first took ~79 s against the plan's ~20 s estimate — each real 3-drone
+mission costs ~20 s, and the estimate did not account for that. A
+module-scoped fixture cut it from four missions to three, and it now takes
+~54 s.
+
+### What stays open
+
+- **A stuck drone that is never commanded cannot be detected.** By design: the
+  detector needs a move to fail, and a motor fault on an idle drone harms
+  nothing. Reported as "undetected (never commanded)", not as a KPI miss.
+- **The `FrontierStrategy` seam is still bypassed under `assignment: global`**
+  (2026-09-21, above), and the `greedy`-versus-`global` question carried from
+  Sprint 2.5 is still unsettled.
+- **Console minors, deferred to the sprint's final review:** the non-zero-exit
+  warning names "blocked" although a blocked run exits 0; every rerun
+  re-validates every scenario, MuJoCo contact checks included; a browser
+  reload loses the handle on a live run; a failed launch surfaces as a
+  Streamlit traceback; a non-default `SWARM_ASSETS_DIR` is a test hook only.
+- **`run.json`'s config snapshot is not loadable as a scenario YAML** — two
+  keys are spelled differently. No re-run feature needs it yet, so the inverse
+  mapping was not built.
+- **Two acceptance tests call `master.tick()` directly**, bypassing failure
+  injection. Harmless today — neither scenario schedules a failure — but a
+  failure scenario added to them would silently run healthy.
