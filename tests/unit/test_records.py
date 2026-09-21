@@ -15,7 +15,21 @@ from typing import Any
 import numpy as np
 import pytest
 
-from swarm_mapping.records import LOG_FILE, capture_run_log
+from swarm_mapping.records import (
+    LOG_FILE,
+    RUN_FILE,
+    SCHEMA_VERSION,
+    VARIANTS,
+    RunInputs,
+    RunOutputs,
+    RunRecord,
+    RunRecordError,
+    capture_run_log,
+    list_runs,
+    load_run,
+    variant_label,
+    write_run_record,
+)
 
 pytestmark = pytest.mark.sprint(3)
 
@@ -190,3 +204,186 @@ class TestJsonLinesLog:
 
         assert counts == {"a": 1, "b": 2}
         assert list(counts) == ["a", "b"]
+
+
+class TestVariants:
+    """The allocation variants, labelled as in the sprint plan's table."""
+
+    def test_the_table_is_exactly_the_sprint_plan(self) -> None:
+        """The four labels are these four (assignment, tolerance) pairs."""
+        assert VARIANTS == {
+            "baseline": ("greedy", 0),
+            "A": ("global", 0),
+            "B": ("greedy", 3),
+            "A+B": ("global", 3),
+        }
+
+    @pytest.mark.parametrize(("label", "pair"), sorted(VARIANTS.items()))
+    def test_each_pair_maps_to_its_label(
+        self, label: str, pair: tuple[str, int]
+    ) -> None:
+        """Each of the four pairs reads back as its label."""
+        assert variant_label(*pair) == label
+
+    @pytest.mark.parametrize("pair", [("greedy", 1), ("global", 5)])
+    def test_anything_else_is_custom(self, pair: tuple[str, int]) -> None:
+        """A tolerance off the table is not silently rounded to a variant."""
+        assert variant_label(*pair) == "custom"
+
+
+def make_record(started_at: str = "2026-09-21T10:00:00.000000+00:00") -> RunRecord:
+    """A small but complete record, as `run_pipeline` would build one."""
+    return RunRecord(
+        started_at=started_at,
+        inputs=RunInputs(
+            config_path="/scenarios/small_indoor/config.yaml",
+            config={"scene_path": "small_indoor.xml"},
+            drones=2,
+            assignment="global",
+            target_tolerance_cells=3,
+            variant="A+B",
+            view=False,
+        ),
+        outputs=RunOutputs(
+            ticks=30,
+            coverage=0.25,
+            blocked=False,
+            unreachable_frontiers=0,
+            tick_capped=True,
+            succeeded=False,
+            wall_seconds=1.5,
+            paths={"0": {"ticks": 30, "route_length": 12}},
+            event_counts={"mission_blocked": 1},
+            files=[LOG_FILE, "map.npz", RUN_FILE],
+        ),
+    )
+
+
+class TestRunRecordFile:
+    """`run.json` round-trips through `write_run_record` / `load_run`."""
+
+    def test_round_trip(self, tmp_path: Path) -> None:
+        """What is written is what is read, plus where it was read from."""
+        record = make_record()
+        write_run_record(tmp_path, record)
+
+        loaded = load_run(tmp_path)
+        assert loaded.inputs == record.inputs
+        assert loaded.outputs == record.outputs
+        assert loaded.started_at == record.started_at
+        assert loaded.directory == tmp_path
+
+    def test_file_carries_the_schema_version(self, tmp_path: Path) -> None:
+        """Four top-level keys, versioned, so a reader can refuse a future one."""
+        write_run_record(tmp_path, make_record())
+
+        data = json.loads((tmp_path / RUN_FILE).read_text())
+        assert data["schema_version"] == SCHEMA_VERSION == 1
+        assert set(data) == {"schema_version", "started_at", "inputs", "outputs"}
+
+    def test_writing_leaves_no_temporary_file(self, tmp_path: Path) -> None:
+        """The write is replace-on-complete and leaves nothing else behind.
+
+        A reader never sees half a file, and the run directory holds only what
+        the run produced.
+        """
+        write_run_record(tmp_path, make_record())
+
+        assert sorted(p.name for p in tmp_path.iterdir()) == [RUN_FILE]
+
+    def test_a_missing_file_is_a_run_record_error(self, tmp_path: Path) -> None:
+        """A directory without run.json is reported, naming the file."""
+        with pytest.raises(RunRecordError, match=RUN_FILE):
+            load_run(tmp_path)
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "{not json",
+            "[]",
+            json.dumps({"schema_version": 99}),
+            json.dumps({"schema_version": 1, "started_at": "x"}),
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "started_at": "x",
+                    "inputs": {"surprise": 1},
+                    "outputs": {},
+                }
+            ),
+        ],
+        ids=["corrupt", "not-an-object", "future-schema", "no-sections", "bad-keys"],
+    )
+    def test_a_malformed_file_is_a_run_record_error(
+        self, tmp_path: Path, content: str
+    ) -> None:
+        """Every way a file can be wrong surfaces as one exception type."""
+        (tmp_path / RUN_FILE).write_text(content)
+
+        with pytest.raises(RunRecordError):
+            load_run(tmp_path)
+
+
+class TestListRuns:
+    """Test case 4: history newest-first; broken runs skipped, and named."""
+
+    def write_run(self, root: Path, name: str, started_at: str) -> None:
+        """Write a valid record into `root/name`."""
+        directory = root / name
+        directory.mkdir()
+        write_run_record(directory, make_record(started_at))
+
+    def test_newest_first(self, tmp_path: Path) -> None:
+        """Ordered by start time, not by name or by filesystem order."""
+        self.write_run(tmp_path, "a", "2026-09-21T09:00:00.000000+00:00")
+        self.write_run(tmp_path, "b", "2026-09-21T11:00:00.000000+00:00")
+        self.write_run(tmp_path, "c", "2026-09-21T10:00:00.000000+00:00")
+
+        listing = list_runs(tmp_path)
+        assert [r.directory.name for r in listing.runs if r.directory] == [
+            "b",
+            "c",
+            "a",
+        ]
+        assert listing.skipped == []
+
+    def test_ties_break_by_directory_name(self, tmp_path: Path) -> None:
+        """Equal timestamps still give one deterministic order."""
+        same = "2026-09-21T10:00:00.000000+00:00"
+        for name in ("run_b", "run_a", "run_c"):
+            self.write_run(tmp_path, name, same)
+
+        names = [r.directory.name for r in list_runs(tmp_path).runs if r.directory]
+        assert names == ["run_a", "run_b", "run_c"]
+
+    def test_broken_runs_are_skipped_and_named(self, tmp_path: Path) -> None:
+        """A crashed or half-written run neither breaks the listing nor hides.
+
+        The history page must render with one in the folder, and say which runs
+        it could not show.
+        """
+        self.write_run(tmp_path, "good", "2026-09-21T10:00:00.000000+00:00")
+        (tmp_path / "corrupt").mkdir()
+        (tmp_path / "corrupt" / RUN_FILE).write_text("{truncated")
+        (tmp_path / "missing").mkdir()
+
+        listing = list_runs(tmp_path)
+        assert [r.directory.name for r in listing.runs if r.directory] == ["good"]
+        assert [s.directory.name for s in listing.skipped] == ["corrupt", "missing"]
+        reasons = {s.directory.name: s.reason for s in listing.skipped}
+        assert RUN_FILE in reasons["missing"]
+        assert reasons["corrupt"]
+
+    def test_plain_files_in_the_root_are_ignored(self, tmp_path: Path) -> None:
+        """Only directories are runs; a stray file is neither run nor skip."""
+        (tmp_path / "notes.txt").write_text("hello")
+
+        listing = list_runs(tmp_path)
+        assert listing.runs == []
+        assert listing.skipped == []
+
+    def test_a_missing_root_is_an_empty_history(self, tmp_path: Path) -> None:
+        """First launch: no runs yet is not an error."""
+        listing = list_runs(tmp_path / "never_created")
+        assert listing.runs == []
+        assert listing.skipped == []
