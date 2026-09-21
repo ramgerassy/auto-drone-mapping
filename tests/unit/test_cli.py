@@ -89,14 +89,17 @@ class TestMissionSucceeded:
     Failing on it would exit non-zero on the happy path.
     """
 
-    def result(self, *, blocked: bool, tick_capped: bool) -> MissionResult:
-        """Build a MissionResult varying only the two outcome flags."""
+    def result(
+        self, *, blocked: bool, tick_capped: bool, swarm_lost: bool = False
+    ) -> MissionResult:
+        """Build a MissionResult varying only the three outcome flags."""
         return MissionResult(
             ticks=100,
             coverage=0.98,
             blocked=blocked,
             unreachable_frontiers=3 if blocked else 0,
             tick_capped=tick_capped,
+            swarm_lost=swarm_lost,
             npz_path=Path("map.npz"),
             png_path=Path("map.png"),
         )
@@ -112,6 +115,24 @@ class TestMissionSucceeded:
     def test_a_clean_run_succeeds(self) -> None:
         """Nothing wrong, nothing reported."""
         assert self.result(blocked=False, tick_capped=False).succeeded
+
+    def test_losing_the_whole_swarm_is_a_failure_even_without_a_tick_cap(
+        self,
+    ) -> None:
+        """A wiped-out swarm did not do its job.
+
+        A coordinator with no drones left reports `is_complete=True`, not a
+        tick cap — `swarm_lost` is the only signal that catches it.
+        """
+        assert not self.result(
+            blocked=False, tick_capped=False, swarm_lost=True
+        ).succeeded
+
+    def test_swarm_lost_and_tick_capped_together_is_still_a_failure(self) -> None:
+        """Either reason alone fails the run; both together still does."""
+        assert not self.result(
+            blocked=False, tick_capped=True, swarm_lost=True
+        ).succeeded
 
 
 class TestCoverageFraction:

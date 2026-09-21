@@ -365,11 +365,16 @@ class TestLogFile:
         assert_event_names(tmp_path / "run")
 
     def test_an_injected_failure_reaches_the_log(self, tmp_path: Path) -> None:
-        """Test case 3, failure half: `failure_injected` is in a failure run.
+        """Test case 3: `failure_injected` and `drone_failed` land together.
 
-        The event is Feature 9's; this checks only that the run log records it
-        on the right tick and counts it. `drone_failed` is Feature 10's
-        detection event and is asserted where it lands.
+        Both are in a failure run's log and both counted in `run.json`.
+        `failure_injected` is Feature 9's (the simulator's ground truth);
+        `drone_failed` is Feature 10's (the master's detection, from missed
+        heartbeats — small_indoor's `heartbeat_timeout_ticks` is 3, so a
+        drone that goes silent at tick 5 is declared lost at tick 7). Both
+        are asserted here so this test closes the Feature 10 x Feature 12
+        gap: a failure run's *detection* event, not just its injection, is
+        on record.
         """
         raw: dict[str, Any] = yaml.safe_load(SMALL_INDOOR.read_text())
         raw["coordination"]["max_ticks"] = 10
@@ -392,8 +397,15 @@ class TestLogFile:
                 "mode": "silent",
             }
         ]
+        failed = [line for line in read_log(output) if line["event"] == "drone_failed"]
+        assert len(failed) == 1
+        assert failed[0]["tick"] == 7
+        assert failed[0]["drone_id"] == 1
+        assert failed[0]["health"] == "lost"
+        assert isinstance(failed[0]["released"], list)
         record = run_json(output)
         assert record["outputs"]["event_counts"]["failure_injected"] == 1
+        assert record["outputs"]["event_counts"]["drone_failed"] == 1
         assert record["inputs"]["config"]["failures"] == [
             {"drone_id": 1, "tick": 5, "mode": "silent"}
         ]
@@ -483,6 +495,88 @@ class TestStderrIsUnchanged:
         assert "INFO" not in completed.stderr
         events = [line["event"] for line in read_log(output)]
         assert "mission_started" in events
+
+
+class TestSwarmLostFailsTheRun:
+    """A mission that loses every drone did not succeed.
+
+    Even without a tick cap: `CentralizedMaster.is_complete` goes True with
+    nothing left to assign, so `tick_capped` alone would miss it
+    (`MissionResult.succeeded`).
+    """
+
+    def test_every_drone_failing_reports_unsucceeded(self, tmp_path: Path) -> None:
+        """Both drones fail silently, early: `run.json` records the failure."""
+        raw: dict[str, Any] = yaml.safe_load(SMALL_INDOOR.read_text())
+        raw["coordination"]["max_ticks"] = 10
+        raw["failures"] = [
+            {"drone": 0, "tick": 1, "mode": "silent"},
+            {"drone": 1, "tick": 1, "mode": "silent"},
+        ]
+        config = tmp_path / "swarm_lost.yaml"
+        config.write_text(yaml.safe_dump(raw))
+        output = tmp_path / "run"
+
+        result = run_pipeline(config, output, drones=2)
+
+        assert result.swarm_lost is True
+        assert result.tick_capped is False  # not what stopped this mission
+        assert result.succeeded is False
+        record = run_json(output)
+        assert record["outputs"]["succeeded"] is False
+        assert record["outputs"]["tick_capped"] is False
+
+    def test_every_drone_failing_exits_non_zero_through_the_cli(
+        self, tmp_path: Path
+    ) -> None:
+        """The CLI subprocess itself exits non-zero, not just `run_pipeline`."""
+        raw: dict[str, Any] = yaml.safe_load(SMALL_INDOOR.read_text())
+        raw["coordination"]["max_ticks"] = 10
+        raw["failures"] = [
+            {"drone": 0, "tick": 1, "mode": "silent"},
+            {"drone": 1, "tick": 1, "mode": "silent"},
+        ]
+        config = tmp_path / "swarm_lost.yaml"
+        config.write_text(yaml.safe_dump(raw))
+        output = tmp_path / "run"
+
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "swarm_mapping.cli",
+                "--config",
+                str(config),
+                "--output",
+                str(output),
+                "--drones",
+                "2",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert completed.returncode == 1, completed.stderr
+        assert (
+            json.loads((output / RUN_FILE).read_text())["outputs"]["succeeded"] is False
+        )
+
+    def test_a_healthy_short_run_is_unaffected(self, tmp_path: Path) -> None:
+        """`swarm_lost` stays False and doesn't touch a normal `succeeded`.
+
+        No failures scheduled, and the mission didn't hit the tick cap.
+        Uses the small inline `OPEN_SCENE` room (one drone, finishes in well
+        under 100 ticks) rather than `small_indoor`, so this stays fast.
+        """
+        output = tmp_path / "run"
+
+        result = run_pipeline(room_config(tmp_path, OPEN_SCENE, 500), output)
+
+        assert result.swarm_lost is False
+        assert result.tick_capped is False
+        assert result.succeeded is True
+        assert run_json(output)["outputs"]["succeeded"] is True
 
 
 OPEN_SCENE = """<mujoco model="open">

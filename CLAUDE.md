@@ -18,7 +18,7 @@ A cooperative swarm of 1–5 drones that explore and map unknown environments in
 
 These shape every decision. Don't propose changes to them without flagging it explicitly.
 
-- **Python 3.11+.** No other languages.
+- **Python 3.13+.** No other languages.
 - **MuJoCo only.** Don't suggest Gazebo, PyBullet, Isaac, etc.
 - **Ground-truth localization.** Drone pose comes from MuJoCo state. No SLAM. The `Localizer` interface exists so SLAM could be added later, but the implementation is `GroundTruthLocalizer`.
 - **2.5D mapping only.** 2D occupancy grid + per-cell height. No 3D voxels. No point clouds.

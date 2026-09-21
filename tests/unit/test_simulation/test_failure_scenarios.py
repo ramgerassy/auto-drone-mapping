@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -28,8 +29,7 @@ def test_the_scenario_is_large_indoor_plus_a_failure(name: str) -> None:
     """CLAUDE.md: 'same as large indoor, with one drone scripted to fail'."""
     large = load_config(SCENARIOS / "large_indoor" / "config.yaml")
     failing = load_config(SCENARIOS / name / "config.yaml")
-    assert failing.scene_path == large.scene_path
-    assert failing.drones == large.drones
-    assert failing.map == large.map
-    assert failing.planning == large.planning
-    assert failing.coordination == large.coordination
+    # Every field but `failures` matches, including `sensor` — a per-field
+    # comparison missed it before (this scenario never varies sensor
+    # geometry, so the field-by-field version silently never caught a drift).
+    assert replace(failing, failures=()) == large
