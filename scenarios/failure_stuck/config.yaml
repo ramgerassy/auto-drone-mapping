@@ -1,0 +1,95 @@
+# Failure stuck scenario — same as large_indoor, one drone's motors jam.
+#
+# CLAUDE.md scenario 4: "same as large indoor, with one drone scripted to
+# fail mid-mission. Tests recovery." Same scene, same five spawns, same
+# parameters as large_indoor — the only difference is the `failures:` block
+# below, so a comparison against the healthy large_indoor run isolates the
+# effect of losing a drone rather than any other change.
+#
+# Drone 1 keeps reporting but stops moving (a motor fault) at tick 300. Tick
+# 300 is mid-mission: five healthy drones reach 95% coverage at tick 517 and
+# finish at tick 894 (F11-R2), so the failure lands well before either
+# milestone. Drone 1 holds a target at tick 300, so its granted-but-unrealized
+# moves are detectable (F11-R3) — a stuck drone with nowhere to go could not be.
+
+scene:
+  # Path relative to src/swarm_mapping/simulation/assets/
+  path: large_indoor.xml
+
+drones:
+  # The corridor crossing — the one region with clear line of sight down both
+  # corridors and clear of every geom. Spread along y, inside the corridor's
+  # interior width (y in [-1.6, 1.6]). Drone ids are this list's indices.
+  start_positions:
+    - [0.0, 0.0, 1.0]
+    - [0.0, -1.2, 1.0]
+    - [0.0, 1.2, 1.0]
+    # Two more along the east-west arm, so the scaling KPI can be measured to
+    # five drones. Same corridor cross, 1.2 m apart — six cells, well clear of
+    # the 2.5-cell separation floor.
+    - [-1.2, 0.0, 1.0]
+    - [1.2, 0.0, 1.0]
+  altitude: 0.3          # low, so a horizontal ray sees anything taller
+  cruise_speed: 1.0      # m/s — one cell per tick; see docs/sprint-3-plan.md D1
+
+sensor:
+  # Same Slamtec RPLIDAR A2M8 model as small_indoor: 360-degree 2D scanning
+  # LiDAR, 16 m rated. num_rays is that one sensor's angular samples per scan.
+  num_rays: 72        # 5-degree spacing
+  max_range: 12.0     # metres — operational cap ~25% below the 16 m rating
+  elevation_layers: 5   # 1 = flat sweep, which records no height at all
+  elevation_max_deg: 20.0   # upward only; a downward ray would hit the floor
+  exclusion_radius: 0.30  # metres — teammate filter; sized to the body's
+                      # corner radius. Matters here: three drones start within
+                      # 1.2 m of each other and would otherwise map each other
+                      # as walls across the corridor.
+
+map:
+  # resolution 0.2, NOT small_indoor's 0.1 — see docs/sprint-2/feature-5-*.md.
+  # At 0.1 this scene is 500x500 = 250k cells, where the clearance mask alone
+  # costs 6.0 ms per plan() call against 0.3 ms here, and plan() runs once per
+  # candidate frontier per re-selecting drone. That compounds past the CI
+  # budget CLAUDE.md sets for the suite.
+  #
+  # Every wall face in the MJCF lies on a 0.2 m lattice point, which is also a
+  # 0.1 m lattice point — so dropping to 0.1 needs no change to the geometry if
+  # Feature 6's acceptance run shows the accuracy margin is thin.
+  resolution: 0.2     # metres per cell
+  origin_x: -25.0     # grid covers -25 to +25 in x
+  origin_y: -25.0
+  grid_width: 250     # 50m / 0.2m
+  grid_height: 250
+  max_height: 3.0     # wall height, for PNG shading
+
+planning:
+  # The drone's body half-extent (0.15) plus a 0.05 m margin. At resolution 0.2
+  # this gives an inflation radius of 1 cell, so a gap must clear 2r+1 = 3
+  # cells plus one cell of discretization slop = 0.8 m. Every doorway in the
+  # scene is 1.2 m, so the scene survives this value rising to r = 2.
+  clearance_radius: 0.20
+  # Eight rooms off a corridor cross is exactly the layout where two drones
+  # will otherwise chase the same doorway. The penalty pushes them apart at
+  # selection time; the radius is roughly one room's width.
+  spread_radius: 6.0
+  spread_penalty: 40
+  min_frontier_size: 2    # 2 = no filtering; raising it trades coverage for speed
+
+coordination:
+  # Centre-to-centre, metres. Floored at the body diagonal
+  # (2 * 0.15 * sqrt(2) = 0.4243) by CentralizedMaster. At resolution 0.2 this
+  # is 2.5 cells, comfortably above the one-cell minimum.
+  min_separation: 0.5
+  max_wait_ticks: 5   # blocked ticks before a drone abandons its frontier
+  max_ticks: 4000     # safety cap — 250x250 cells and 8 rooms need more ticks
+  assignment: global          # A+B, see docs/sprint-3/feature-7-*.md
+  target_tolerance_cells: 3   # A+B
+  no_progress_ticks: 800   # 200 truncated a mission by 26 points; see progress.md
+  return_to_base_ticks: 150  # idle this long -> fly home and park
+  heartbeat_timeout_ticks: 3  # missed heartbeats before a drone is declared lost
+  stuck_timeout_ticks: 3      # granted moves that did not happen before "stuck"
+                      # than small_indoor; a blocked mission must still end.
+
+failures:
+  - drone: 1
+    tick: 300
+    mode: stuck
