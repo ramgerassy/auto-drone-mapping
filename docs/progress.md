@@ -2,7 +2,7 @@
 
 A running journal of non-obvious decisions, trade-offs, and thoughts worth
 remembering — the *why* behind choices that the code and git history don't
-capture on their own. Newest entries at the top. Each entry records what was
+capture on their own. Entries run oldest to newest. Each entry records what was
 decided, why, and its current status.
 
 ---
@@ -1494,3 +1494,160 @@ Worth noting what this means for the KPI numbers: **start positions are a tuned
 parameter of every scenario**, as load-bearing as the allocation policy, and
 nothing in the config says so. A scenario author picking spawns is choosing part
 of the result.
+
+---
+
+## 2026-09-21 — We tested the next-best-view hypothesis instead of building it
+
+**The hypothesis**, carried since Sprint 2 and restated at the close of Sprint
+2.5: `NearestFrontier` wastes travel because it ranks frontiers on distance
+alone and ignores how much each would reveal, so a strategy weighing expected
+information gain would explore measurably faster.
+
+That claim had already cost three abandoned attempts at
+`InformationGainFrontier`, each killed on cost — tracing line-of-sight from
+every candidate against a *belief* map ran ~17x slower per tick for no measured
+benefit. A fourth attempt would have been the third time this project built
+something before measuring whether it was worth building. So we tested the
+hypothesis directly.
+
+### The instrument
+
+`benchmarks/oracle.py` — a `FrontierStrategy` that cheats. It scores each
+candidate with the *exact* number of unknown cells a visit would reveal, traced
+over the ground-truth scene rather than estimated from the map so far. No
+implementable strategy can score better than exactly right, so it bounds the
+whole family from above: whatever it fails to win is not available at any
+price.
+
+It deliberately does not cheat at two things. **Routing** stays on the belief
+grid through known-free cells, exactly as the shipped system flies — an oracle
+taking shortcuts through unmapped space would be measuring a different system.
+**Candidates** come from the live map — it chooses better among the same
+options, it does not invent options. So the bound covers target selection and
+nothing else, which is exactly what a `FrontierStrategy` controls.
+
+The instrument is tested (`tests/unit/test_benchmarks/test_oracle.py`, 10
+tests) for a specific reason: three diagnostics in this project have now
+produced confident wrong conclusions because the *instrument* was wrong, not
+the system. One test asserts the visible set of an open room is a complete
+disc, because too sparse a ray fan would silently under-count gain at range and
+quietly deflate the bound in exactly the direction that flatters the verdict.
+
+### Finding 1 — the strategy seam selects nothing in any shipped scenario
+
+Found before the sweep could run, by instrumenting the live call. Over four
+missions on two maps at one and three drones: **718 selection calls, every one
+with exactly one candidate.** Tick counts reproduced the known baselines
+exactly (3414 / 1112 / 2296 / 1432), so the probe was not perturbing the runs.
+
+The cause is `assignment: global`, which all four scenarios ship. In
+`_assign_globally` the target is chosen by `coordination/allocation.py` — a
+Dijkstra cost field plus a swarm-wide matching — and the strategy is then handed
+a one-element list:
+
+```python
+assignment = strategy.select(grid, [by_cell[target]], state.cell, claimed)
+```
+
+`NearestFrontier` is a router. Its cost ranking, its lower-bound pruning and
+its spreading penalty never execute in any shipped configuration. The control
+confirms the mode is the cause — same map under `greedy`:
+
+```
+mode                 calls with >1 candidate   oracle would differ
+global (shipped)                          0%                     —
+greedy, 1 drone             99% (up to 16)                    89%
+greedy, 3 drones                       100%                    30%
+```
+
+**This reframes all three earlier failures.** `InformationGainFrontier` was not
+merely aimed at a minority cause; it was aimed at a seam the shipped system
+routes around. It would have been invisible even had it worked.
+
+It is also an architecture-level flag: CLAUDE.md names `FrontierStrategy` as
+one of four stability points and describes it as the extensibility seam for
+exploration policy. In the code as shipped, it does not select. The swarm's
+actual exploration policy is "nearest frontier, globally matched", and there is
+no notion of expected information anywhere in the system.
+
+### Finding 2 — a perfect strategy is roughly break-even
+
+Swept on `large_indoor` under `greedy`, the only mode where a strategy can act.
+`decay` weights distance against gain; `decay=0` is pure information gain and a
+large `decay` collapses onto nearest-frontier, so the family contains the
+baseline at one end and the sweep is a bound over it rather than a verdict on
+one weighting.
+
+```
+drones  variant          ticks   t@95%      cov   revis   path
+     1  baseline          3414    2371   97.37%     503   3413
+     1  oracle d=0        4000       —   91.43%     992   4000   capped
+     1  oracle d=0.05     4000    2043   97.34%     591   4000   capped
+     1  oracle d=0.1      3862    1934   97.36%     664   3861
+     1  oracle d=0.2      3303    1976   97.36%     460   3302
+     1  oracle d=0.5      3205       —   88.76%     232   3205   stalled
+     3  baseline          1049     743   97.36%     229   2864
+     3  oracle d=0        2987    1398   97.35%    1991   8754
+     3  oracle d=0.05     1427     686   97.35%     529   4217
+     3  oracle d=0.1      2522     619   97.34%     666   4509   stalled
+     3  oracle d=0.2      1411     617   97.36%     508   4076
+     3  oracle d=0.5      1157     666   97.36%     308   3375
+```
+
+Best completed oracle run against baseline:
+
+```
+                time to 95%   total ticks   distance travelled
+1 drone  d=0.2         -17%           -3%                 -3%
+3 drones d=0.2         -17%          +35%                +42%
+```
+
+**The hypothesis does not survive.** A perfect, unimplementable oracle reaches
+95% coverage 17% sooner and pays for it with a 35% longer mission and 42% more
+travel at three drones. It front-loads the big reveals and then pays to mop up
+what it scattered. That is the ceiling; every real implementation sits below
+it, and the one that was attempted ran 17x slower per tick, which swallows a
+17% gain several times over.
+
+`d=0` — pure information gain, distance ignored — is catastrophic at both swarm
+sizes: capped at 91% coverage with one drone, 8.7x the revisits with three.
+Distance dominates gain on these maps. That is a property of the problem, not a
+tuning artifact.
+
+Caveats kept in the open: three of twelve runs ended capped or stalled, so
+their tick counts are censored rather than measured and are excluded from the
+comparison; and this is one map, so it is a statement about `large_indoor`
+rather than a law.
+
+### Decision
+
+**Do not build a next-best-view strategy.** It is bypassed in the shipped
+configuration, and where it is not bypassed a perfect version is break-even at
+best. Recorded as a closed question rather than deferred work.
+
+The instrument is kept rather than deleted. A decision not to build is only
+worth as much as the evidence behind it, and in three weeks the claim "we
+measured the ceiling at 17%" is unverifiable without the code that measured it.
+
+### What this opens instead
+
+Two real levers, both cheaper than NBV:
+
+1. **The allocator, not the strategy.** If expected information gain is worth
+   having at all, it belongs in `allocate`'s cost function, which is currently
+   pure distance. That is where target selection actually happens.
+2. **`greedy` may now beat `global`.** On `large_indoor` at three drones,
+   `greedy` finished in **1049** ticks against `global`'s **1112** at identical
+   coverage. A+B was adopted before the elevation-sweep sensor landed, so the
+   allocator may have quietly regressed against a sensor that no longer exists.
+   One run, so it is a question rather than a finding — but a cheap one to
+   settle.
+
+### Methodological note
+
+This is the first time the project has answered "should we build X" by building
+an instrument instead of building X. It cost a day and closed a question that
+had already consumed three attempts. The generalisation worth keeping: **an
+upper bound is usually cheaper to measure than a feature is to build, and it
+can only be measured before the feature exists.**
