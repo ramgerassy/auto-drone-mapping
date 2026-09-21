@@ -10,7 +10,7 @@ from numpy.typing import NDArray
 
 from swarm_mapping.simulation.localizer import GroundTruthLocalizer
 from swarm_mapping.simulation.raycaster import MjRayCaster
-from swarm_mapping.simulation.types import Pose, RayHit
+from swarm_mapping.simulation.types import FailureMode, Pose, RayHit
 
 # Physical drone geometry, read by the MJCF builder below and by `perception`
 # (the teammate filter) rather than repeating the literals.
@@ -156,6 +156,11 @@ class SimulationEngine:
         # Compute forward kinematics for initial state
         mujoco.mj_forward(self._model, self._data)
 
+        # Drones that have failed, and how. Read only by `heartbeat` and
+        # `set_drone_position`: the simulator knows who failed, and it is the
+        # coordinator's job to work that out from symptoms.
+        self._failed: dict[int, FailureMode] = {}
+
     @property
     def model(self) -> mujoco.MjModel:
         """The MuJoCo model."""
@@ -228,6 +233,47 @@ class SimulationEngine:
         """
         return self._localizer.get_body_id(drone_id)
 
+    def fail_drone(self, drone_id: int, mode: FailureMode) -> None:
+        """Fail a drone permanently.
+
+        Args:
+            drone_id: Integer identifier for the drone.
+            mode: How it fails — see `FailureMode`.
+
+        Raises:
+            KeyError: If drone_id is not recognized.
+            ValueError: If the drone has already failed. Failure is permanent,
+                so a second call is a scripting error, not a mode change.
+        """
+        if drone_id not in self._joint_qpos_adr:
+            msg = f"Unknown drone_id: {drone_id}"
+            raise KeyError(msg)
+        if drone_id in self._failed:
+            msg = (
+                f"drone {drone_id} has already failed "
+                f"({self._failed[drone_id].value}); a drone fails once"
+            )
+            raise ValueError(msg)
+        self._failed[drone_id] = mode
+
+    def heartbeat(self, drone_id: int) -> bool:
+        """Whether the drone reported in this tick.
+
+        Args:
+            drone_id: Integer identifier for the drone.
+
+        Returns:
+            False only for a silently failed drone. A stuck drone still
+            reports — which is exactly why it needs a different detector.
+
+        Raises:
+            KeyError: If drone_id is not recognized.
+        """
+        if drone_id not in self._joint_qpos_adr:
+            msg = f"Unknown drone_id: {drone_id}"
+            raise KeyError(msg)
+        return self._failed.get(drone_id) is not FailureMode.SILENT
+
     def cast_rays(
         self,
         drone_id: int,
@@ -270,6 +316,12 @@ class SimulationEngine:
         if drone_id not in self._joint_qpos_adr:
             msg = f"Unknown drone_id: {drone_id}"
             raise KeyError(msg)
+
+        # A failed drone's motors do not respond, in either mode. The command
+        # is dropped rather than rejected: the caller cannot know the drone
+        # failed, and finding that out is the point.
+        if drone_id in self._failed:
+            return
 
         qpos_adr = self._joint_qpos_adr[drone_id]
 
