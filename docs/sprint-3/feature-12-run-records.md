@@ -41,11 +41,11 @@
 One JSON object per line, in emission order:
 
 ```json
-{"event": "Starting exploration: 2 drone(s), max 60 ticks", "tick": 0, "level": "INFO"}
+{"event": "mission_started", "tick": 0, "level": "INFO", "drones": 2, "max_ticks": 60}
 {"event": "mission_blocked", "tick": 212, "level": "WARNING", "unreachable_frontiers": 3}
 ```
 
-- `event` is `record.getMessage()`; `tick` is the call site's own `tick` extra if it passed one, otherwise `master.tick_count` when the line was emitted — ticks completed so far (0 before and during the first tick); `level` is the level name; every other `extra=` field follows. Standard `LogRecord` attributes are excluded — several (`process`, `pathname`, `created`) are machine- or time-specific and would break byte-identical logs.
+- `event` is the call site's `event` extra if it passed one, else `record.getMessage()` — the CLI's two prose INFO lines pass `mission_started` / `mission_progress` (message text unchanged for stderr), so every event is a machine name matching `^[a-z][a-z0-9_]*$`; `tick` is the call site's own `tick` extra if it passed one, otherwise `master.tick_count` when the line was emitted — ticks completed so far (0 before and during the first tick); `level` is the level name; every other `extra=` field follows. Standard `LogRecord` attributes are excluded — several (`process`, `pathname`, `created`) are machine- or time-specific and would break byte-identical logs.
 - Captures the `swarm_mapping` logger tree at INFO and above, regardless of `--verbose`. Third-party loggers are not captured.
 - Values JSON cannot encode become JSON-native where possible (numpy scalars via `.item()`), else `str()`. A log call never crashes a mission.
 
@@ -69,7 +69,7 @@ One JSON object per line, in emission order:
     "tick_capped": true, "succeeded": false, "wall_seconds": 1.42,
     "paths": {"0": {"ticks": 60, "route_length": 58, "distinct_cells": 58,
                     "revisited_cells": 0, "longest_gap": 0}},
-    "event_counts": {"Starting exploration: 2 drone(s), max 60 ticks": 1},
+    "event_counts": {"mission_started": 1},
     "files": ["log.jsonl", "map.npz", "map.png", "paths.json",
               "route_drone_0.png", "run.json"]
   }
@@ -195,6 +195,28 @@ class TestJsonLinesLog:
         (line,) = read_lines(log_path)
         assert line["drone_id"] == 2
         assert line["cell"] == [3, 4]
+
+    def test_an_event_extra_names_the_event(self, tmp_path: Path) -> None:
+        """A prose message for the terminal still logs under a stable name.
+
+        Without this, every progress line ("Tick 50/60 — coverage 12.3%")
+        would be its own event and its own `event_counts` key.
+        """
+        log_path = tmp_path / LOG_FILE
+        with capture_run_log(log_path) as run_log:
+            for tick in (50, 100):
+                LOGGER.info(
+                    "Tick %d — coverage %.1f%%",
+                    tick,
+                    12.3,
+                    extra={"event": "mission_progress", "coverage": 0.123},
+                )
+            counts = run_log.event_counts()
+
+        lines = read_lines(log_path)
+        assert [line["event"] for line in lines] == ["mission_progress"] * 2
+        assert lines[0]["coverage"] == 0.123
+        assert counts == {"mission_progress": 2}
 
     def test_standard_record_attributes_are_not_leaked(self, tmp_path: Path) -> None:
         """`lineno`, `pathname`, `process` and the like are left out.
@@ -606,6 +628,7 @@ from __future__ import annotations
 import collections
 import copy
 import json
+import re
 import subprocess
 import sys
 from dataclasses import asdict, replace
@@ -624,8 +647,11 @@ pytestmark = pytest.mark.sprint(3)
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SMALL_INDOOR = REPO_ROOT / "scenarios" / "small_indoor" / "config.yaml"
 
-# Past the CLI's 50-tick progress line, so the log holds more than the start.
-CAPPED_TICKS = 60
+# Short: every test that needs a real two-drone run shares one this long.
+CAPPED_TICKS = 10
+
+# What an event name looks like: a stable machine name, never prose.
+EVENT_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
 def capped_config(directory: Path, max_ticks: int = CAPPED_TICKS) -> Path:
@@ -655,6 +681,34 @@ def without_wall_clock(data: dict[str, Any]) -> dict[str, Any]:
     del out["started_at"]
     del out["outputs"]["wall_seconds"]
     return out
+
+
+def assert_event_names(directory: Path) -> None:
+    """Every log event and every `event_counts` key is a machine name."""
+    events = [line["event"] for line in read_log(directory)]
+    keys = list(run_json(directory)["outputs"]["event_counts"])
+    for name in events + keys:
+        assert EVENT_NAME.match(name), f"not an event name: {name!r}"
+
+
+def room_config(directory: Path, scene_xml: str, max_ticks: int) -> Path:
+    """A one-drone config on a 10 m inline scene, for tests needing many ticks.
+
+    small_indoor's 200x200 grid costs about 0.1 s a tick; this 100x100 room
+    costs roughly a tenth of that.
+    """
+    scene = directory / "room.xml"
+    scene.write_text(scene_xml)
+    raw: dict[str, Any] = yaml.safe_load(SMALL_INDOOR.read_text())
+    raw["scene"]["path"] = str(scene)
+    raw["drones"]["start_positions"] = [[-3.0, 0.0, 1.0]]
+    raw["map"].update(
+        {"origin_x": -5.0, "origin_y": -5.0, "grid_width": 100, "grid_height": 100}
+    )
+    raw["coordination"]["max_ticks"] = max_ticks
+    path = directory / "room.yaml"
+    path.write_text(yaml.safe_dump(raw))
+    return path
 
 
 def snapshot_to_yaml(snapshot: dict[str, Any], directory: Path) -> Path:
@@ -706,9 +760,10 @@ class TestEveryRunIsRecorded:
         self, two_drone_run: tuple[Path, Path, MissionResult], tmp_path: Path
     ) -> None:
         """Runs in different directories never touch each other's records."""
-        config, first, _ = two_drone_run
+        _, first, _ = two_drone_run
         before = (first / RUN_FILE).read_bytes(), (first / LOG_FILE).read_bytes()
 
+        config = capped_config(tmp_path, max_ticks=5)
         run_pipeline(config, tmp_path / "second", drones=1)
 
         after = (first / RUN_FILE).read_bytes(), (first / LOG_FILE).read_bytes()
@@ -729,6 +784,26 @@ class TestEveryRunIsRecorded:
         run_pipeline(config, output, drones=1)
 
         assert read_log(output) == first
+
+    @pytest.mark.parametrize("fault", ["bad_config", "too_many_drones"])
+    def test_a_run_that_fails_validation_leaves_nothing(
+        self, tmp_path: Path, fault: str
+    ) -> None:
+        """A bad config or `--drones` override fails before DIR is touched."""
+        config = capped_config(tmp_path, max_ticks=5)
+        drones = 2
+        if fault == "bad_config":
+            raw = yaml.safe_load(config.read_text())
+            del raw["sensor"]
+            config.write_text(yaml.safe_dump(raw))
+        else:
+            drones = 9
+        output = tmp_path / "run"
+
+        with pytest.raises(ValueError):
+            run_pipeline(config, output, drones=drones)
+
+        assert not output.exists()
 
 
 class TestRunJson:
@@ -805,24 +880,35 @@ class TestRunJson:
 
         assert run_json(output)["outputs"]["event_counts"] == dict(counted)
 
-    def test_the_record_reproduces_the_map(
+    def test_rerunning_the_record_reproduces_the_run(
         self, two_drone_run: tuple[Path, Path, MissionResult], tmp_path: Path
     ) -> None:
-        """Re-running from run.json alone gives a byte-identical map.
+        """Re-running from run.json alone reproduces the run exactly.
 
-        The config snapshot plus the drone count is the whole recipe.
+        Test case 2 and R8 in one re-run: the config snapshot plus the drone
+        count is the whole recipe, and a second headless run of the same inputs
+        gives the same map bytes, the same log bytes, and the same record except
+        for the wall clock. `config_path` differs only because the replay is
+        read from a different file.
         """
         _, output, _ = two_drone_run
-        inputs = run_json(output)["inputs"]
+        original = run_json(output)
 
         replay = tmp_path / "replay"
         run_pipeline(
-            snapshot_to_yaml(inputs["config"], tmp_path),
+            snapshot_to_yaml(original["inputs"]["config"], tmp_path),
             replay,
-            drones=inputs["drones"],
+            drones=original["inputs"]["drones"],
         )
+        replayed = run_json(replay)
 
         assert (replay / "map.npz").read_bytes() == (output / "map.npz").read_bytes()
+        assert (replay / LOG_FILE).read_bytes() == (output / LOG_FILE).read_bytes()
+        expected = without_wall_clock(original)
+        actual = without_wall_clock(replayed)
+        assert actual["outputs"] == expected["outputs"]
+        del expected["inputs"]["config_path"], actual["inputs"]["config_path"]
+        assert actual == expected
 
 
 class TestLogFile:
@@ -844,20 +930,34 @@ class TestLogFile:
             assert isinstance(line["event"], str)
             assert isinstance(line["tick"], int)
 
-    def test_ticks_follow_the_mission(
+    def test_events_are_machine_names(
         self, two_drone_run: tuple[Path, Path, MissionResult]
     ) -> None:
-        """Ticks never go backwards and match the loop that logged them."""
-        _, output, result = two_drone_run
-        ticks = [line["tick"] for line in read_log(output)]
+        """Prose messages carry an `event` name, so no key embeds a number."""
+        _, output, _ = two_drone_run
+        assert_event_names(output)
+        assert "mission_started" in run_json(output)["outputs"]["event_counts"]
 
+    def test_ticks_follow_the_mission(self, tmp_path: Path) -> None:
+        """Lines carry the ticks completed when they were written.
+
+        The start line precedes the first tick (0); the progress line the CLI
+        logs after tick 50 carries 50 — a stamp, since that call passes no
+        tick of its own. Run on a small inline room to reach 50 ticks cheaply.
+        """
+        output = tmp_path / "run"
+        result = run_pipeline(room_config(tmp_path, OPEN_SCENE, 50), output)
+        lines = read_log(output)
+        ticks = [line["tick"] for line in lines]
+
+        assert result.ticks == 50
         assert ticks == sorted(ticks)
-        assert ticks[0] == 0, "the start line precedes the first tick"
-        progress = [
-            line for line in read_log(output) if line["event"].startswith("Tick 50/")
-        ]
+        assert lines[0]["event"] == "mission_started"
+        assert lines[0]["tick"] == 0
+        progress = [line for line in lines if line["event"] == "mission_progress"]
         assert [line["tick"] for line in progress] == [50]
-        assert ticks[-1] <= result.ticks
+        assert 0.0 < progress[0]["coverage"] <= 1.0
+        assert_event_names(output)
 
     def test_structured_events_keep_their_fields(self, tmp_path: Path) -> None:
         """The master's own events arrive with their `extra=` payload.
@@ -865,18 +965,7 @@ class TestLogFile:
         Uses a room split by a gap too narrow to fly — it ends `blocked` in
         well under a second, which guarantees a `mission_blocked` event.
         """
-        scene = tmp_path / "blocked.xml"
-        scene.write_text(BLOCKED_SCENE)
-        raw: dict[str, Any] = yaml.safe_load(SMALL_INDOOR.read_text())
-        raw["scene"]["path"] = str(scene)
-        raw["drones"]["start_positions"] = [[-3.0, 0.0, 1.0]]
-        raw["map"].update(
-            {"origin_x": -5.0, "origin_y": -5.0, "grid_width": 100, "grid_height": 100}
-        )
-        raw["coordination"]["max_ticks"] = 400
-        config = tmp_path / "blocked.yaml"
-        config.write_text(yaml.safe_dump(raw))
-
+        config = room_config(tmp_path, BLOCKED_SCENE, 400)
         result = run_pipeline(config, tmp_path / "run")
 
         blocked = [
@@ -890,6 +979,7 @@ class TestLogFile:
         assert blocked[-1]["tick"] == result.ticks - 1
         assert blocked[-1]["unreachable_frontiers"] == result.unreachable_frontiers
         assert blocked[-1]["level"] == "WARNING"
+        assert_event_names(tmp_path / "run")
 
     def test_an_injected_failure_reaches_the_log(self, tmp_path: Path) -> None:
         """Test case 3, failure half: `failure_injected` is in a failure run.
@@ -924,6 +1014,7 @@ class TestLogFile:
         assert record["inputs"]["config"]["failures"] == [
             {"drone_id": 1, "tick": 5, "mode": "silent"}
         ]
+        assert_event_names(output)
 
 
 class TestPathsAlwaysRecorded:
@@ -959,22 +1050,10 @@ class TestPathsAlwaysRecorded:
 class TestViewIsViewOnly:
     """R8, replacing test case 5 — a viewer cannot open headless.
 
-    Two headless runs of the same inputs agree on everything but the wall
-    clock; and `view` changes nothing in the record's inputs but `view`.
+    That two headless runs of the same inputs agree on everything but the
+    wall clock is `TestRunJson::test_rerunning_the_record_reproduces_the_run`.
+    Here: `view` changes nothing in the record's inputs but `view`.
     """
-
-    def test_two_headless_runs_have_identical_records(
-        self, two_drone_run: tuple[Path, Path, MissionResult], tmp_path: Path
-    ) -> None:
-        """Same inputs, same record and same log, bar the wall clock."""
-        config, first, _ = two_drone_run
-        second = tmp_path / "again"
-        run_pipeline(config, second, drones=2)
-
-        assert without_wall_clock(run_json(first)) == without_wall_clock(
-            run_json(second)
-        )
-        assert (first / LOG_FILE).read_bytes() == (second / LOG_FILE).read_bytes()
 
     def test_view_is_the_only_input_it_changes(
         self, two_drone_run: tuple[Path, Path, MissionResult]
@@ -1020,8 +1099,20 @@ class TestStderrIsUnchanged:
         assert "Starting exploration" not in completed.stderr
         assert "INFO" not in completed.stderr
         events = [line["event"] for line in read_log(output)]
-        assert any(event.startswith("Starting exploration") for event in events)
+        assert "mission_started" in events
 
+
+OPEN_SCENE = """<mujoco model="open">
+  <option timestep="0.01" gravity="0 0 -9.81"/>
+  <worldbody>
+    <geom name="floor" type="plane" size="5 5 0.05"/>
+    <geom name="wall_east" type="box" pos="5 0 1.5" size="0.1 5 1.5"/>
+    <geom name="wall_west" type="box" pos="-5 0 1.5" size="0.1 5 1.5"/>
+    <geom name="wall_north" type="box" pos="0 5 1.5" size="5 0.1 1.5"/>
+    <geom name="wall_south" type="box" pos="0 -5 1.5" size="5 0.1 1.5"/>
+  </worldbody>
+</mujoco>
+"""
 
 BLOCKED_SCENE = """<mujoco model="blocked">
   <option timestep="0.01" gravity="0 0 -9.81"/>
@@ -1439,6 +1530,45 @@ class TestInstallScenario:
 
         assert problems
         assert self.everything_under(*roots) == []
+
+    @pytest.mark.parametrize("error", [PermissionError, FileExistsError])
+    def test_a_failed_final_write_leaves_no_half_room(
+        self,
+        roots: tuple[Path, Path],
+        monkeypatch: pytest.MonkeyPatch,
+        error: type[OSError],
+    ) -> None:
+        """If the scenario directory cannot be made, the scene is removed too.
+
+        A scene file with no scenario would block the name and list nowhere.
+        The failure is forced on that one `mkdir` — a filesystem fault, not a
+        simulator stand-in. An unexpected error propagates; a name taken in a
+        race is reported like any other clash.
+        """
+        scenarios_root, assets_dir = roots
+        target = scenarios_root / "my_room"
+        real_mkdir = Path.mkdir
+
+        def failing_mkdir(self: Path, *args: Any, **kwargs: Any) -> None:
+            if self == target:
+                raise error(17, "forced", str(self))
+            real_mkdir(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "mkdir", failing_mkdir)
+        config_text, scene_text = self.upload()
+
+        if error is FileExistsError:
+            problems = install_scenario(
+                "my_room", config_text, scene_text, scenarios_root, assets_dir
+            )
+            assert any("already exists" in p for p in problems)
+        else:
+            with pytest.raises(PermissionError):
+                install_scenario(
+                    "my_room", config_text, scene_text, scenarios_root, assets_dir
+                )
+
+        assert self.everything_under(scenarios_root, assets_dir) == []
 ```
 
 - [ ] **Step 2: Run to verify they fail**
