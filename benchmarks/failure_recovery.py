@@ -191,11 +191,21 @@ def run(scenario: str, healthy: dict[str, Any] | None = None) -> dict[str, Any]:
         )
         return row
 
-    # Not `injected_tick or declared_tick`: a failure injected at tick 0 is
-    # falsy and would silently collapse the fallback, reporting latency 0
-    # even when it should be `declared_tick - 0`.
-    baseline_tick = injected_tick if injected_tick is not None else declared_tick
-    latency_ticks = declared_tick - baseline_tick
+    if injected_tick is None:
+        # A failure was scheduled and the master went on to declare a drone
+        # failed, but the simulator never logged `failure_injected` for it.
+        # That is not a legitimate outcome to report a latency for — it means
+        # the log is missing an event the harness relies on, so the harness
+        # itself is broken. Silently falling back to `declared_tick` would
+        # report `latency_ticks == 0` and `kpi_met: True` for a run that
+        # never actually measured detection latency.
+        msg = (
+            f"{scenario!r}: drone {failure.drone_id} was declared failed at "
+            f"tick {declared_tick} but no 'failure_injected' event was logged "
+            "for it — the benchmark harness is broken, not the mission"
+        )
+        raise RuntimeError(msg)
+    latency_ticks = declared_tick - injected_tick
     latency_seconds = latency_ticks * config.tick_seconds
     row.update(
         injected_tick=injected_tick,

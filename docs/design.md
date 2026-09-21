@@ -41,11 +41,11 @@ correctness and legibility at that size, not for asymptotics. `NearestFrontier`
 runs a full A\* per candidate frontier per re-selecting drone; that is the wrong
 answer at 50 drones and the right one at 3.
 
-**Environment:** Python 3.13+ (`pyproject.toml` pins `requires-python >=3.13`;
-CLAUDE.md's "3.11+" is the floor, not what CI runs), MuJoCo, numpy, Pillow,
-PyYAML. Streamlit only in the optional `ui` extra, for the operator console
-(§5.9). `uv` for dependencies, `ruff` for lint and format, `mypy --strict` for
-types, `pytest` for tests.
+**Environment:** Python 3.13+ (`pyproject.toml` pins `requires-python >=3.13`,
+matching CLAUDE.md's floor), MuJoCo, numpy, Pillow, PyYAML. Streamlit only in
+the optional `ui` extra, for the operator console (§5.9). `uv` for
+dependencies, `ruff` for lint and format, `mypy --strict` for types, `pytest`
+for tests.
 
 ---
 
@@ -1148,10 +1148,19 @@ unknown elsewhere:                    0
 Zero elsewhere — the map is as complete as clearance physically permits. The
 first cut of the CLI exited non-zero on `blocked` and would therefore have failed
 the happy path at 98.1% coverage. `MissionResult.succeeded` is now
-`not tick_capped` only; `blocked` is *reported*, with its frontier count, for the
-operator to weigh against coverage. What separates residue from a real wall is
-**magnitude**: 3 regions at 98% is residue, 200 regions at 58% is a wall. The
-contrasting measurement, from the clearance work:
+`not tick_capped and not swarm_lost`; `blocked` is *reported*, with its
+frontier count, for the operator to weigh against coverage. What separates
+residue from a real wall is **magnitude**: 3 regions at 98% is residue, 200
+regions at 58% is a wall.
+
+`swarm_lost` — every drone's `DroneHealth` is not `ACTIVE` — is checked
+separately because a coordinator with no drones left reports
+`is_complete=True` (nothing is left to assign), so a wiped-out swarm reaches
+its own terminal state without ever hitting `max_ticks`; `tick_capped` alone
+would call that run a success. It is read from `CentralizedMaster.drone_states`
+at the end of the run, not added to the `Coordinator` Protocol — a derived
+read, not a new named seam. The contrasting measurement, from the clearance
+work:
 
 ```
 wide doorway (5 cells)   complete=True blocked=False unreachable=0 known=96.9%
@@ -1202,9 +1211,6 @@ and a `DistributedAuction` would owe the same answer.
   handle lives in the Streamlit session; the run still finishes and appears in
   History, but the Run page no longer tracks it and nothing stops a second run
   being launched alongside it.
-- **The console's non-zero-exit warning is worded too broadly.** It says the
-  mission "stopped short (blocked or tick-capped) or the run crashed", but a
-  blocked run exits 0 (§8.1); a non-zero exit means tick-capped or crashed.
 - **Every console rerun re-validates every scenario**, including the MuJoCo
   contact check on each scene. Not measured as a problem yet; the fix, if it
   becomes sluggish, is caching on file modification times.

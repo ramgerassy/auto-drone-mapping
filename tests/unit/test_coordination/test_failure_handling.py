@@ -357,13 +357,18 @@ class TestWreck:
     def test_paths_route_around_the_wreck(self, scene: Path) -> None:
         """Footprint k=1 plus clearance r=1: nothing within Chebyshev 2 of the wreck."""
         master, _, (wc, wr) = self._wrecked(scene)
+        saw_assignment = False
         while not master.is_complete and master.tick_count < 600:
             master.tick()
             assignment = master.drone_states[0].assignment
             if assignment is None:
                 continue
+            saw_assignment = True
             for col, row in assignment.path[master.drone_states[0].path_index :]:
                 assert max(abs(col - wc), abs(row - wr)) > 2
+        # Otherwise the loop above asserts nothing: a drone 0 that is never
+        # assigned a path would pass this test vacuously.
+        assert saw_assignment
 
     def test_a_wreck_in_the_corridor_is_passed_without_thrashing(
         self, tmp_path: Path

@@ -60,9 +60,9 @@ Key flags (`uv run swarm-mapping --help` lists all of them):
 variants that the console and benchmarks compare: **baseline** (`greedy`, 0),
 **A** (`global`, 0), **B** (`greedy`, 3), **A+B** (`global`, 3).
 
-The process exits non-zero if the mission hit its tick cap without finishing.
-A run that ends "blocked" (a few frontiers it could see but not reach) still
-exits 0. See [design.md §8.1](docs/design.md) for why.
+The process exits non-zero if the mission hit its tick cap without finishing,
+or if it lost every drone. A run that ends "blocked" (a few frontiers it could
+see but not reach) still exits 0. See [design.md §8.1](docs/design.md) for why.
 
 ### What a run writes
 
