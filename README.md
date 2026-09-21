@@ -49,7 +49,7 @@ Key flags (`uv run swarm-mapping --help` lists all of them):
 | --- | --- |
 | `--config PATH` | Scenario YAML. Required. |
 | `--output DIR` | Where the run's files go. Default `output/`. |
-| `--drones N` | Fly the first N start positions. It never invents new ones. |
+| `--drones N` | Fly the first N start positions. It never invents new ones. On the failure scenarios N must be at least 2: the schedule fails drone 1, and a schedule naming a drone not in the run is a startup error. |
 | `--assignment {greedy,global}` | Override how frontiers are handed out. |
 | `--target-tolerance CELLS` | Override how far a frontier may drift before a drone's target counts as gone. |
 | `--view` | Open a live MuJoCo 3D viewer. View-only: the map is identical without it. Needs a display. |
@@ -84,8 +84,9 @@ uv sync --extra ui
 uv run swarm-console        # opens in the browser
 ```
 
-Streamlit is an optional extra, so the core install, CI and Docker image never
-include it. Every console run launches the CLI above as a separate process, so
+Streamlit is an optional extra, so the core install and CI never include it.
+Launch it from the repository root: the console finds `scenarios/` and writes
+`runs/` relative to the current directory. Every console run launches the CLI above as a separate process, so
 it is identical to typing the same command. Runs land in
 `runs/<time>_<scenario>_<variant>_<N>d/`, which git ignores.
 
@@ -114,7 +115,9 @@ installed, so they run locally and skip in CI.
 
 ## Benchmarks
 
-These are not tests. They run full missions and print a table. Run them by hand.
+These are not tests. They run full missions, print a table, and overwrite their
+committed results file in `benchmarks/` (`results.json`,
+`oracle_ceiling_<mode>.json`, `failure_recovery.json`). Run them by hand.
 
 ```bash
 uv run python benchmarks/strategy_matrix.py [scenario]   # compare the allocation variants (baseline, A, B, A+B) across scenarios
@@ -168,4 +171,4 @@ The mapping module traces sensor rays through the occupancy grid to determine wh
 | Supercover / thick line | Visits ALL cells the mathematical line touches | Most complete coverage | Slower, more cells to process per ray |
 | Amanatides & Woo | Steps through grid by tracking next axis crossing | Exact grid traversal — visits precisely the cells the ray intersects | More complex implementation |
 
-**Why Bresenham:** Determinism is a hard requirement for this project (same config + same seed = identical run). Bresenham uses integer arithmetic only, guaranteeing identical results across platforms. At our grid scale (200x200 cells, 36 rays/scan), performance differences are negligible. The "thin line" approximation is acceptable at 10cm resolution — a ray that barely clips a cell corner does not meaningfully affect the occupancy map. If we find coverage artifacts later, we can upgrade to Amanatides & Woo without changing the Mapper's public API.
+**Why Bresenham:** Determinism is a hard requirement for this project (same config + same seed = identical run). Bresenham uses integer arithmetic only, guaranteeing identical results across platforms. At our grid scale (`small_indoor`: 200x200 cells, 72 azimuth rays × 5 elevation layers = 360 rays/scan), performance differences are negligible. The "thin line" approximation is acceptable at 10cm resolution — a ray that barely clips a cell corner does not meaningfully affect the occupancy map. If we find coverage artifacts later, we can upgrade to Amanatides & Woo without changing the Mapper's public API.

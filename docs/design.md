@@ -55,7 +55,7 @@ Seven modules, each with one responsibility and a named interface at its edge.
 
 | Module | Responsibility | Interface(s) | Key types |
 | --- | --- | --- | --- |
-| `config` | Load and validate a scenario YAML at startup; fail fast | `parse_config` / `load_config` | `ScenarioConfig` and five frozen sub-configs |
+| `config` | Load and validate a scenario YAML at startup; fail fast | `parse_config` / `load_config` | `ScenarioConfig` and six frozen sub-configs |
 | `simulation` | Wrap MuJoCo: inject drone bodies, report poses, cast rays, teleport; inject scripted failures | `Localizer`, `RayCaster` | `SimulationEngine`, `Pose`, `RayHit`, `FailureMode`, `FailureInjector` |
 | `perception` | Turn raw ray hits into world-frame observations; filter teammates | `Sensor` | `Rangefinder`, `RayObservation`, `ScanResult` |
 | `mapping` | Maintain the 2.5D grid by Bayesian log-odds update; detect frontiers; export | `Mapper` | `OccupancyGrid`, `FrontierRegion` |
@@ -302,7 +302,7 @@ Step by step, with the owner of each step:
 
 | Step | Owner | What happens |
 | --- | --- | --- |
-| 0. Observe | `coordination.CentralizedMaster` | Every drone not yet `LOST` is polled with `engine.heartbeat`. Missed heartbeats and unrealized moves are counted per drone; a drone past `heartbeat_timeout_ticks` or `stuck_timeout_ticks` is declared `LOST` or `STUCK` and its frontier released (§5.8). Only drones heard this tick go on to sense and move. |
+| 0. Observe | `coordination.CentralizedMaster` | Every drone not yet `LOST` is polled with `engine.heartbeat`. Missed heartbeats and unrealized moves are counted per drone; a drone past `heartbeat_timeout_ticks` or `stuck_timeout_ticks` is declared `LOST` or `STUCK` and its frontier released (§5.8). Only drones heard this tick sense; only `ACTIVE` drones heard this tick are commanded to move — a `STUCK` drone is heard and sensed but never moved again. |
 | 1. Sense | `perception.Rangefinder` | Pre-computed body-frame ray directions are rotated into the world frame by the drone's quaternion; `engine.cast_rays` runs `mj_ray` with the drone's own body excluded. Each hit within `max_range` becomes a `RayObservation`; a hit landing inside a teammate's exclusion sphere becomes a MISS truncated at the sphere **entry** point (§5.4). |
 | 2. Map | `mapping.Mapper` | Each observation is traced with `bresenham_2d` from the drone cell to the endpoint cell. HIT: every cell but the last gets `update_free`, the last gets `update_occupied(hit_z)`. MISS: every cell including the endpoint gets `update_free`. Log-odds increments are `+0.847` occupied / `-0.405` free, clamped to `±5.0`; height is `max(height, hit_z)` and never decays. |
 | 3. Detect frontiers | `mapping.frontier` | A frontier cell is a **free** cell (p < 0.4) with a 4-connected **unknown** neighbour (0.4 ≤ p ≤ 0.6). Cells are clustered 8-connected by BFS, regions below `min_frontier_size` are dropped, and each region returns a world centroid, a representative free cell nearest that centroid, and a size. Sorted by `(row, col)`. |
@@ -688,6 +688,14 @@ shipped scenario, and must be **≥ 1** — in `config` and again in
 `CentralizedMaster.__init__`. There is deliberately no value that switches
 detection off: a missing key is a startup error, not a silent default.
 
+The two modes declare at different latencies for the same timeout of 3 — silent
+in 2 ticks, stuck in 3 — because of where each piece of evidence is counted. A
+missed heartbeat is counted in `_observe` on the very tick the failure is
+injected, so the third miss and the declaration fall on injection tick + 2. An
+unrealized move is counted in `_move`, at the end of a tick, and only weighed by
+the *next* tick's `_observe`, so the third one is declared on injection
+tick + 3.
+
 **Tick order: observe → sense → assign → move.** Declarations happen in the
 new `_observe` phase, which runs *first*. That ordering is what lets a failure
 declared on tick *t* release its frontier before tick *t*'s own assignment
@@ -861,7 +869,7 @@ two cannot drift.
 
 **Streamlit is an optional extra.** It is a heavy dependency, so it lives in
 `[project.optional-dependencies] ui` and never in the core install: the
-simulator, CI and the Docker image stay as lean as before. `uv sync --extra ui`
+simulator and CI stay as lean as before. `uv sync --extra ui`
 installs it; `uv run swarm-console` starts the console, and prints the install
 hint instead if the extra is missing.
 
@@ -950,8 +958,15 @@ build still says whether shipped behaviour broke or in-flight work is not done:
 
 At the switch the Regression step ran 358 tests. **Coverage is collected only
 on PRs to `main`.** With `--cov` on every push, the push gate measured
-**6 min 9 s** against CLAUDE.md's 5-minute per-commit budget, so pushes run the
-two labels without `--cov` to stay inside it.
+**6 min 9 s** against CLAUDE.md's 5-minute per-commit budget. Without it
+(PR #24), the same 358 regression tests ran in **2 min 42 s**, progression
+(150 tests) in 1 min 39 s, and the whole push job in **4 min 37 s**. That
+margin was thin, and Feature 11 then added a ~54 s integration module. The
+first push after it (run 35653954803, the PR #25 merge into `sprint-3`) took
+**6 min 15 s** from creation to completion: regression 358 tests in 2 min 42 s,
+progression 202 tests in 3 min 13 s. **The push gate is over its 5-minute
+budget again, even without coverage.** No decision on that has been recorded;
+it is listed in §9.
 
 **The forgotten bump now fails loudly.** It was missed twice, silently. A test
 tagged with a sprint *ahead of* `CURRENT_SPRINT` now raises a
@@ -961,8 +976,9 @@ mistake is caught the first time it can happen.
 
 Two further markers select *cost*, orthogonally to era:
 
-- **`sanity`** — a small hand-curated set of fast cross-module health checks,
-  appended to both CI selections so neither can run empty.
+- **`sanity`** — a small hand-curated set of fast cross-module health checks.
+  Since Task 0 no CI step selects it (each CI step runs a whole label, and an
+  empty progression step is accepted); it is used by the pre-commit hook.
 - **`acceptance`** — full-scenario runs, minutes not seconds. Acceptance tests
   still carry `sprint(N)`; the marker says how expensive they are, the sprint tag
   says which era they belong to.
@@ -970,8 +986,16 @@ Two further markers select *cost*, orthogonally to era:
 Runtime is a real constraint here, not a formality: `tests/integration/test_e2e.py`
 alone takes ~108 s and the full suite ~113 s against CLAUDE.md's <5 min
 per-commit budget, while a single `large_indoor` 3-drone acceptance run takes
-~279 s. That gap is exactly what the `acceptance` marker is for. (Those are
-Sprint 2 figures; the Sprint 3 push-gate time is above.)
+~279 s (58 s after Feature 6's fixes — `progress.md`, 2026-09-20). That gap is
+exactly what the `acceptance` marker is for. (Those are Sprint 2 figures; the
+Sprint 3 push-gate times are above.)
+
+**Pre-commit** runs ruff and ruff-format, basic file checks, and — when Python
+files are staged — `pytest -m "(regression or sanity) and not acceptance"`.
+The `and not acceptance` is a Task 0 follow-up (PR #26): once the bump made
+Sprint 2 regression, the hook's old `regression or sanity` selection had quietly
+grown to include the 7 acceptance tests, minutes per commit. It was found
+while writing these docs and fixed in PR #26.
 
 **The console's UI tests are deliberately not run in CI.** The console is an
 optional extra, not core: it needs to work, but it is not CI-gated. CI installs
@@ -1065,9 +1089,9 @@ tests prove the contract is understood.
 | Tier | KPI | How it is measured | Status |
 | --- | --- | --- | --- |
 | 1 | Coverage ≥95% indoor | Fraction of grid cells classified free (p < 0.4) or occupied (p > 0.6) — `cli.coverage_fraction`. Cells inside the unknown band do not count. | `small_indoor`, 1 drone: **98.13%** measured. 3-drone e2e test asserts ≥95%. `large_indoor`, 3 drones: **97.6%** measured. |
-| 1 | Map accuracy ≥98% per-cell | Per-cell classification against a truth grid built from the parsed MJCF box geoms (`tests/scene_truth.py`). | Helper extracted to `tests/scene_truth.py` and parameterized by `MapConfig`; `test_classified_cells_match_ground_truth` is **in flight** — no measured figure recorded here yet. |
-| 1 | Zero collisions in nominal ops | Drone↔obstacle: guaranteed by construction (A\* traverses only free cells, refuses corner-cutting, and refuses cells inside the clearance mask — re-checked every tick against committed paths). Drone↔drone: `resolve_moves` enforces `min_separation` on end-of-tick positions. | Enforced and unit-tested; the whole-mission assertion (`test_no_two_drones_ever_breach_separation`) is **in flight**. |
-| 2 | Scaling speedup ≥1.5× (1→3 drones, small indoor) | **Ticks to reach 95% coverage**, 1 drone vs 3. Deterministic and directly comparable; wall-clock was rejected because per-tick compute *rises* with drone count, so adding drones could worsen the number while the swarm genuinely explores faster. Both arms come from one config file via `--drones N`, which takes the **first N** start positions — a second config file could drift and make the KPI lie rather than fail. | `tests/acceptance/test_scaling_kpi.py` is **in flight**; no measured ratio recorded here yet. |
+| 1 | Map accuracy ≥98% per-cell | Per-cell classification against a truth grid built from the parsed MJCF box geoms (`tests/scene_truth.py`). | Asserted ≥98% over a 3-drone `large_indoor` mission by the acceptance test `test_classified_cells_match_ground_truth`, which passes (`progress.md`, 2026-09-20, Feature 6: accuracy "passing throughout"). The measured fraction itself is not recorded. |
+| 1 | Zero collisions in nominal ops | Drone↔obstacle: guaranteed by construction (A\* traverses only free cells, refuses corner-cutting, and refuses cells inside the clearance mask — re-checked every tick against committed paths). Drone↔drone: `resolve_moves` enforces `min_separation` on end-of-tick positions. | Enforced and unit-tested, and asserted over a whole 3-drone `large_indoor` mission by the acceptance test `test_no_two_drones_ever_breach_separation`, which passes (same `progress.md` entry: separation "passing throughout"). |
+| 2 | Scaling speedup ≥1.5× (1→3 drones, small indoor) | **Ticks to reach 95% coverage**, 1 drone vs 3. Deterministic and directly comparable; wall-clock was rejected because per-tick compute *rises* with drone count, so adding drones could worsen the number while the swarm genuinely explores faster. Both arms come from one config file via `--drones N`, which takes the **first N** start positions — a second config file could drift and make the KPI lie rather than fail. | **Measured on `large_indoor`, not on the scene this row names:** **2.92×** 1→3 and **4.59×** 1→5 (ticks to 95%: 2371 / 811 / 517; `progress.md`, 2026-09-20, "Scaling KPI"). The small-indoor 1→3 figure the row defines is asserted ≥1.5× by `tests/acceptance/test_scaling_kpi.py` on every PR to `main`, but its current ratio is not recorded; the last one recorded, 4.70× (221 vs 47 ticks to 95%, `progress.md`, 2026-09-20, Feature 6), predates the elevation sweep, which superseded every earlier baseline. |
 | 2 | Frontier reassignment latency <2 s | Ticks from `failure_injected` to `drone_failed` (the declaration that releases the failed drone's claim), × `tick_seconds` (§5.8). Because declaration runs before the same tick's assignment pass, detection latency *is* reassignment latency. `benchmarks/failure_recovery.py`, `large_indoor`, 5 drones, drone 1 failed at tick 300. | **Met.** Silent → `LOST` in **2 ticks = 0.40 s**; stuck → `STUCK` in **3 ticks = 0.60 s**. Both < 2 s (tick = 0.2 s). Seconds are nominal (D1). |
 | 1 | Coverage ≥95% indoor, **with a drone lost** | Same coverage measure, same benchmark; the mission must also reach its own terminal state, not `max_ticks`. | **Met.** **97.37%** in both failure modes — equal to the healthy run. Neither run was tick-capped. |
 | 1 | Zero collisions, including with the wreck | A failed drone stays in `resolve_moves` as a static body; teammates plan around it on the overlay (§5.8). | Unit-tested (`test_teammates_keep_their_distance_from_the_wreck`, the wreck-routing tests). |
@@ -1085,8 +1109,9 @@ failure_stuck        1369    579  97.37%    stuck   3 ticks = 0.60 s
 
 Total ticks rise **+44%** (silent) and **+53%** (stuck); time to 95% coverage
 rises **+12%** in both. The swarm reaches the coverage target nearly on time and
-spends the extra ticks on the tail. A fast integration test on `small_indoor`
-(drone 2 failed at tick 40, 3 drones) guards the same behaviour on every push.
+spends the extra ticks on the tail. An integration test on `small_indoor`
+(drone 2 failed at tick 40, 3 drones; ~54 s) guards the same behaviour on every
+push: it asserts the latency is under 2 s and coverage stays ≥95%.
 
 **`--drones N` never invents a start position.** A fabricated one would have to
 be collision-free, inside the grid, and `min_separation` clear of its
@@ -1136,30 +1161,22 @@ and a `DistributedAuction` would owe the same answer.
 
 ## 9. Known limitations and future work
 
-**Open, in Sprint 2:**
+**Resolved since Sprint 2** (kept so the history reads straight; details in
+`progress.md`):
 
-- **`large_indoor` with 3 drones does not terminate cleanly.** Coverage plateaus
-  at ~97.6% by tick 1000 and the mission then burns ~3000 more ticks before
-  stopping at the `max_ticks` cap. The leading hypothesis is that most remaining
-  unknown space is **wall interior** — rays stop at the wall surface, so cells
-  behind it stay at p = 0.5 forever, and every free cell facing a wall interior
-  is a *permanent* frontier. At `resolution 0.2` the inflation radius is only 1
-  cell, so many of those permanent frontiers stay reachable and the swarm chases
-  them; `small_indoor` escapes at `resolution 0.1` where `r = 2` makes the
-  equivalent frontiers unreachable. That would make the difference a consequence
-  of the **resolution/clearance ratio**, not of scene size. Measured at tick
-  1100 against ground truth: of 1498 remaining unknown cells, **1484 are inside a
-  solid geom**. Two mitigations are in flight — `min_frontier_size` (§5.2) and
-  dropping an assignment whose target is no longer a frontier cell — and neither
-  has yet been confirmed to make the scenario terminate.
-- **Acceptance suite is in flight, and its results are not in this document.**
-  Tests 11–14 of the Feature 6 plan — all-rooms-entered, map accuracy, zero
-  collisions and the scaling KPI — are being written into `tests/acceptance/`
-  now. No figure from them is quoted here, and §8 should be revisited once they
-  have run. The termination assertion is the one that depends on the finding
-  below.
-- **`--view` with 3 drones has never been run** — the development session has no
-  display. It is in the feature's "done when".
+- **`large_indoor` now terminates.** At Feature 6 it plateaued at ~97.6% and
+  ran to the `max_ticks` cap. The wall-interior hypothesis recorded here was
+  measured and was *not* the cause: at the plateau every surviving frontier was
+  unreachable, the frontier set never settled, and assignments were never
+  re-checked against their target. The fix was a target re-check plus the
+  `no_progress_ticks` stop (§4) — `progress.md`, 2026-09-20, "Finding 2
+  resolved".
+- **The acceptance suite exists and runs on PRs to `main`**: per-room mapped
+  fraction, map accuracy, zero collisions and the scaling KPI. §8 now quotes
+  what has been recorded from it.
+- **`--view` with 3 drones has been run.** Watching it is how the wall-hugging,
+  room-looping and loitering bugs were found (`progress.md`, 2026-09-20,
+  Feature 6 addenda).
 
 **Open, from Sprint 3:**
 
@@ -1169,8 +1186,12 @@ and a `DistributedAuction` would owe the same answer.
 - **The `FrontierStrategy` seam is bypassed under `assignment: global`.**
   Carried from Sprint 2.5 (`progress.md`, 2026-09-21): in global mode
   `coordination/allocation.py` chooses the target and the strategy is handed a
-  one-element list, so `NearestFrontier` only routes. Variants A and A+B run
-  in this mode.
+  one-element list, so `NearestFrontier` only routes. Every shipped scenario
+  defaults to A+B (`assignment: global`, `target_tolerance_cells: 3`), so the
+  seam is bypassed in the default configuration; it selects only when a run
+  overrides `--assignment greedy`.
+- **The CI push gate is over its 5-minute budget again** (6 min 15 s after
+  Feature 11, without coverage — §7.1). Open; no decision recorded.
 - **Console UI tests run only locally**, with `uv sync --extra ui` (§7.1).
 - **A browser reload loses the console's handle on a live run.** The process
   handle lives in the Streamlit session; the run still finishes and appears in
@@ -1190,9 +1211,6 @@ and a `DistributedAuction` would owe the same answer.
   are spelled differently). Re-running uses `config_path` and the recorded
   overrides; an inverse mapping was deferred until something needs "re-run
   this record".
-- **The pre-commit hook runs `regression or sanity`**, which since the Task 0
-  bump also selects the 7 acceptance tests from earlier sprints — minutes, not
-  seconds, on a commit that stages Python files.
 
 **Structural, accepted:**
 
@@ -1254,6 +1272,6 @@ Every measured figure in this document is traceable. Sources:
 | Latency 2 ticks / 0.40 s (silent), 3 ticks / 0.60 s (stuck); 894/1289/1369 ticks; t@95% 517/579/579; 97.37% | `benchmarks/failure_recovery.py` → `failure_recovery.json` (Feature 11); `progress.md`, 2026-09-21 |
 | `small_indoor` 498/254/197 ticks unchanged by pose read-back | Feature 10 zero-regression check; `tests/integration/test_zero_regression.py` |
 | 103 of 365 tests per push; 283 stranded; 358 regression at the switch | `sprint-3-plan.md`, Task 0; commit `53fae7b` |
-| CI push gate 6 min 9 s | A Sprint 3 GitHub Actions run with `--cov` on push; `progress.md`, 2026-09-21 |
+| CI push gate 6 min 9 s with coverage; 2 min 42 s regression / 4 min 37 s job without; 6 min 15 s after Feature 11 | Sprint 3 GitHub Actions runs before and after PR #24, and run 35653954803 (after PR #25); `progress.md`, 2026-09-21 |
 | Wreck overlay +2.0 log-odds; timeouts 3/3 | `src/swarm_mapping/coordination/master.py`; scenario YAMLs |
 | 11 console `AppTest` tests; 37 other `test_app` tests | Feature 13 report |

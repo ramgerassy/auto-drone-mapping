@@ -1735,8 +1735,20 @@ written.
 
 Running everything had a price: with coverage on, the push gate measured
 **6 min 9 s** against the 5-minute budget. Decided: coverage is collected only
-on PRs to `main`; pushes run Regression and Progression without `--cov`. Also
-decided: the console's Streamlit UI tests are not CI-gated. The console is an
+on PRs to `main`; pushes run Regression and Progression without `--cov`
+(PR #24). Measured after that change: the 358 regression tests in 2 min 42 s
+instead of 6 min 9 s, and the whole push job in 4 min 37 s. The margin did not
+last. Feature 11 added a ~54 s integration module, and the first push after it
+merged took **6 min 15 s**, progression alone 3 min 13 s. The push gate is over
+budget again without coverage, and that is open.
+
+Also found while writing this entry: the pre-commit hook ran
+`regression or sanity`, which after the bump had quietly grown to include the
+7 acceptance tests — minutes on every commit. Same root cause as the CI gate:
+a selection written when the regression label held no acceptance tests. Fixed in PR #26,
+which makes it `(regression or sanity) and not acceptance`.
+
+Also decided: the console's Streamlit UI tests are not CI-gated. The console is an
 optional extra, not core — it needs to work, not to gate a push — so CI
 installs without the `ui` extra and those tests skip there, while the
 plain-Python console tests still run.
@@ -1806,10 +1818,12 @@ and pays in the tail. Stuck costs more than silent here; nothing was measured
 that would separate the causes, so this entry does not guess at one.
 
 On `small_indoor` (3 drones, drone 2 failed at tick 40) the same recovery is
-guarded on every push: 2 ticks silent, 3 ticks stuck. That module takes ~79 s
-against the plan's ~20 s estimate — each real 3-drone mission costs ~20 s, and
-the estimate did not account for that. The ruling is a module-scoped fixture
-(four missions down to three), being applied as this is written.
+guarded on every push. It measured 2 ticks silent and 3 ticks stuck (0.1 s
+ticks there); what it asserts is latency under 2 s and coverage ≥95%. The
+module first took ~79 s against the plan's ~20 s estimate — each real 3-drone
+mission costs ~20 s, and the estimate did not account for that. A
+module-scoped fixture cut it from four missions to three, and it now takes
+~54 s.
 
 ### What stays open
 
@@ -1830,5 +1844,5 @@ the estimate did not account for that. The ruling is a module-scoped fixture
 - **Two acceptance tests call `master.tick()` directly**, bypassing failure
   injection. Harmless today — neither scenario schedules a failure — but a
   failure scenario added to them would silently run healthy.
-- **The pre-commit hook runs `regression or sanity`**, which since the bump
-  also selects the 7 acceptance tests from earlier sprints.
+- **The CI push gate is over its 5-minute budget again** — 6 min 15 s after
+  Feature 11, without coverage. No decision yet.
