@@ -70,9 +70,20 @@ class CentralizedMaster:
             emitting small frontier regions, a few transiently reachable, so a
             swarm with nothing left to find never stops on its own. 0 disables
             the check.
+        return_to_base_ticks: Consecutive unassigned ticks after which an idle
+            drone flies back to its start cell. 0 keeps it parked.
+        assignment_mode: How frontiers are handed out — "greedy" or "global".
+        target_tolerance_cells: How far a live frontier may drift from a
+            drone's target before the target counts as gone.
+        heartbeat_timeout_ticks: Consecutive missed heartbeats after which a
+            drone is declared LOST. At least 1.
+        stuck_timeout_ticks: Consecutive granted moves that did not happen
+            after which a drone is declared STUCK. Waiting to yield never
+            counts. At least 1.
 
     Raises:
-        ValueError: If the swarm is empty, if min_separation is not finite, is
+        ValueError: If either failure-detection timeout is below 1, if the
+            swarm is empty, if min_separation is not finite, is
             below the body diagonal, or spans under one cell, or if two drones
             start closer together than min_separation — in metres or, once
             snapped to cells, in cells.
@@ -92,6 +103,8 @@ class CentralizedMaster:
         return_to_base_ticks: int = 0,
         assignment_mode: str = "greedy",
         target_tolerance_cells: int = 0,
+        heartbeat_timeout_ticks: int = 3,
+        stuck_timeout_ticks: int = 3,
     ) -> None:
         self._engine = engine
         self._sensor = sensor
@@ -128,6 +141,18 @@ class CentralizedMaster:
         self._target_tolerance = target_tolerance_cells
         self._idle_ticks: dict[int, int] = {}
         self._going_home: dict[int, list[Cell]] = {}
+        for name, value in (
+            ("heartbeat_timeout_ticks", heartbeat_timeout_ticks),
+            ("stuck_timeout_ticks", stuck_timeout_ticks),
+        ):
+            if value < 1:
+                msg = (
+                    f"{name} must be at least 1, got {value}: failure "
+                    "detection cannot be switched off"
+                )
+                raise ValueError(msg)
+        self._heartbeat_timeout = heartbeat_timeout_ticks
+        self._stuck_timeout = stuck_timeout_ticks
 
         grid = mapper.grid
         # Every guard below is a `<` comparison and every comparison against

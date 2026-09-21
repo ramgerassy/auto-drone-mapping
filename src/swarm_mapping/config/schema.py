@@ -313,6 +313,10 @@ class CoordinationSettings:
             find can hold assignments indefinitely and never satisfy "every
             drone unassigned". Measured on large_indoor: coverage is flat from
             tick 2000 while the mission runs to its cap. 0 disables the check.
+        heartbeat_timeout_ticks: Consecutive missed heartbeats before a drone
+            is declared lost. At least 1: detection cannot be switched off.
+        stuck_timeout_ticks: Consecutive granted-but-unrealized moves before a
+            drone is declared stuck. Waiting to yield never counts. At least 1.
     """
 
     min_separation: float
@@ -322,6 +326,8 @@ class CoordinationSettings:
     assignment: str
     no_progress_ticks: int
     return_to_base_ticks: int
+    heartbeat_timeout_ticks: int
+    stuck_timeout_ticks: int
 
 
 # Kept as strings: `config` depends on nothing, so the mapping onto
@@ -587,6 +593,12 @@ def parse_config(raw: Any) -> ScenarioConfig:
             ),
             return_to_base_ticks=_non_negative_int(
                 coordination_section, "coordination", "return_to_base_ticks"
+            ),
+            heartbeat_timeout_ticks=_positive_int(
+                coordination_section, "coordination", "heartbeat_timeout_ticks"
+            ),
+            stuck_timeout_ticks=_positive_int(
+                coordination_section, "coordination", "stuck_timeout_ticks"
             ),
         ),
         failures=failures,

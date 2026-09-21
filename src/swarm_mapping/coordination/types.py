@@ -3,10 +3,29 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 
 from swarm_mapping.planning.frontier_strategy import FrontierAssignment
 
 Cell = tuple[int, int]
+
+
+class DroneHealth(Enum):
+    """The master's *diagnosis* of a drone — inferred, never told.
+
+    Distinct from `simulation.FailureMode`, which is the simulator's ground
+    truth. Tests compare the two; the master only ever sees symptoms.
+
+    Attributes:
+        ACTIVE: Reporting and moving as commanded.
+        LOST: Missed `heartbeat_timeout_ticks` consecutive heartbeats.
+        STUCK: Still reporting, but `stuck_timeout_ticks` consecutive granted
+            moves did not happen.
+    """
+
+    ACTIVE = "active"
+    LOST = "lost"
+    STUCK = "stuck"
 
 
 @dataclass(frozen=True)
@@ -24,6 +43,8 @@ class DroneState:
             `path[path_index + 1]`; equality with the last index means arrived.
         waited_ticks: Consecutive ticks this drone has been blocked by another
             drone. Reset on any successful move; drives the deadlock escape.
+        health: The master's diagnosis. Anything but ACTIVE is permanent: the
+            drone is never tasked again.
     """
 
     drone_id: int
@@ -31,3 +52,4 @@ class DroneState:
     assignment: FrontierAssignment | None
     path_index: int
     waited_ticks: int
+    health: DroneHealth = DroneHealth.ACTIVE

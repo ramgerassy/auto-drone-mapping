@@ -288,6 +288,8 @@ def build_mission(config: ScenarioConfig, drones: int | None = None) -> Mission:
         return_to_base_ticks=config.coordination.return_to_base_ticks,
         assignment_mode=config.coordination.assignment,
         target_tolerance_cells=config.coordination.target_tolerance_cells,
+        heartbeat_timeout_ticks=config.coordination.heartbeat_timeout_ticks,
+        stuck_timeout_ticks=config.coordination.stuck_timeout_ticks,
     )
 
     injector = FailureInjector(
