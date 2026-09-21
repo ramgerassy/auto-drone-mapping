@@ -69,6 +69,28 @@ class TestJsonLinesLog:
         assert line["drone_id"] == 2
         assert line["cell"] == [3, 4]
 
+    def test_an_event_extra_names_the_event(self, tmp_path: Path) -> None:
+        """A prose message for the terminal still logs under a stable name.
+
+        Without this, every progress line ("Tick 50/60 — coverage 12.3%")
+        would be its own event and its own `event_counts` key.
+        """
+        log_path = tmp_path / LOG_FILE
+        with capture_run_log(log_path) as run_log:
+            for tick in (50, 100):
+                LOGGER.info(
+                    "Tick %d — coverage %.1f%%",
+                    tick,
+                    12.3,
+                    extra={"event": "mission_progress", "coverage": 0.123},
+                )
+            counts = run_log.event_counts()
+
+        lines = read_lines(log_path)
+        assert [line["event"] for line in lines] == ["mission_progress"] * 2
+        assert lines[0]["coverage"] == 0.123
+        assert counts == {"mission_progress": 2}
+
     def test_standard_record_attributes_are_not_leaked(self, tmp_path: Path) -> None:
         """`lineno`, `pathname`, `process` and the like are left out.
 

@@ -178,11 +178,27 @@ def install_scenario(
         scenarios_root.mkdir(parents=True, exist_ok=True)
         with scene_file.open("x") as handle:
             handle.write(scene_text)
-        scenario_dir.mkdir()
-        with (scenario_dir / "config.yaml").open("x") as handle:
-            handle.write(yaml.safe_dump(raw, sort_keys=False))
     except FileExistsError as exc:
         return [f"{exc.filename} already exists; installing never overwrites"]
+    created_dir = False
+    try:
+        scenario_dir.mkdir()
+        created_dir = True
+        with (scenario_dir / "config.yaml").open("x") as handle:
+            handle.write(yaml.safe_dump(raw, sort_keys=False))
+    except BaseException as exc:
+        # Never leave half a room behind: a scene file with no scenario would
+        # block the name forever and list nowhere. Only what this call created
+        # is removed — the scene was written above with exclusive create, and
+        # the directory only if our own mkdir made it.
+        scene_file.unlink(missing_ok=True)
+        if created_dir:
+            for leftover in scenario_dir.iterdir():
+                leftover.unlink()
+            scenario_dir.rmdir()
+        if isinstance(exc, FileExistsError):
+            return [f"{exc.filename} already exists; installing never overwrites"]
+        raise
     return []
 
 
@@ -215,6 +231,8 @@ def _spawns_in_geometry(
 
     Drone-to-drone contacts are ignored here — spacing is `build_mission`'s
     check, against the configured `min_separation` rather than bare overlap.
+    Geoms with `contype=0` and `conaffinity=0` never produce contacts, so a
+    spawn inside one is not seen here (no shipped scene has one).
 
     Args:
         engine: An engine built with one drone per start position, drone id =

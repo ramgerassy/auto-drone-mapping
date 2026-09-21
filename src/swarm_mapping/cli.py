@@ -395,8 +395,8 @@ def run_pipeline(
 
     Args:
         config_path: Path to the scenario YAML config.
-        output_dir: Directory for output files. Created if missing; files from
-            an earlier run in the same directory are replaced.
+        output_dir: Directory for output files. Created once the config has
+            validated; files from an earlier run in it are replaced.
         view: If True, open a live MuJoCo 3D viewer. View-only — the exported
             map is identical whether or not this is enabled.
         view_delay: Extra seconds to pause per rendered tick. Ignored without
@@ -422,44 +422,9 @@ def run_pipeline(
     # branches on them, so they cannot perturb the run's determinism.
     started_at = datetime.now(UTC).isoformat(timespec="microseconds")
     clock_start = time.monotonic()
-    output_dir.mkdir(parents=True, exist_ok=True)
 
-    with capture_run_log(output_dir / LOG_FILE) as run_log:
-        return _run_recorded(
-            config_path,
-            output_dir,
-            run_log,
-            started_at=started_at,
-            clock_start=clock_start,
-            view=view,
-            drones=drones,
-            view_delay=view_delay,
-            visit_heatmaps=visit_heatmaps,
-            assignment=assignment,
-            target_tolerance=target_tolerance,
-        )
-
-
-def _run_recorded(
-    config_path: Path,
-    output_dir: Path,
-    run_log: RunLog,
-    *,
-    started_at: str,
-    clock_start: float,
-    view: bool,
-    drones: int | None,
-    view_delay: float,
-    visit_heatmaps: bool,
-    assignment: str | None,
-    target_tolerance: int | None,
-) -> MissionResult:
-    """The body of `run_pipeline`, run while its log is being captured.
-
-    Split out only so the mission code keeps its indentation: the arguments
-    are `run_pipeline`'s, plus the active `run_log` and the two wall-clock
-    readings taken before the log was opened.
-    """
+    # Validate before touching the output directory: a bad config or drone
+    # override fails fast and leaves nothing behind, as it always has.
     config = load_config(config_path)
     if assignment is not None or target_tolerance is not None:
         config = replace(
@@ -475,13 +440,56 @@ def _run_recorded(
             ),
         )
     mission = build_mission(config, drones)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    with capture_run_log(output_dir / LOG_FILE) as run_log:
+        return _run_recorded(
+            config_path,
+            output_dir,
+            run_log,
+            config=config,
+            mission=mission,
+            started_at=started_at,
+            clock_start=clock_start,
+            view=view,
+            view_delay=view_delay,
+            visit_heatmaps=visit_heatmaps,
+        )
+
+
+def _run_recorded(
+    config_path: Path,
+    output_dir: Path,
+    run_log: RunLog,
+    *,
+    config: ScenarioConfig,
+    mission: Mission,
+    started_at: str,
+    clock_start: float,
+    view: bool,
+    view_delay: float,
+    visit_heatmaps: bool,
+) -> MissionResult:
+    """The body of `run_pipeline`, run while its log is being captured.
+
+    Split out only so the mission code keeps its indentation: `config` (with
+    overrides applied) and `mission` were validated and built before the
+    output directory was touched; `run_log` is the active log, and the two
+    wall-clock readings were taken before either.
+    """
     master = mission.master
     max_ticks = config.coordination.max_ticks
 
+    # Message text unchanged for stderr; `event` names it for the run log.
     logger.info(
         "Starting exploration: %d drone(s), max %d ticks",
         len(mission.engine.drone_ids),
         max_ticks,
+        extra={
+            "event": "mission_started",
+            "drones": len(mission.engine.drone_ids),
+            "max_ticks": max_ticks,
+        },
     )
 
     viewer = _open_viewer(mission) if view else None
@@ -529,11 +537,13 @@ def _run_recorded(
                 time.sleep(view_delay)
 
             if master.tick_count % 50 == 0:
+                coverage = coverage_fraction(mission.mapper.grid)
                 logger.info(
                     "Tick %d/%d — coverage %.1f%%",
                     master.tick_count,
                     max_ticks,
-                    100.0 * coverage_fraction(mission.mapper.grid),
+                    100.0 * coverage,
+                    extra={"event": "mission_progress", "coverage": coverage},
                 )
 
         npz_path = output_dir / "map.npz"

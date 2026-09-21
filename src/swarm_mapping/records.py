@@ -75,6 +75,19 @@ def _jsonable(value: object) -> object:
     return str(value)
 
 
+def _event_name(record: logging.LogRecord) -> str:
+    """The event a record reports: its `event` extra, else its message.
+
+    Prose messages meant for a terminal ("Tick 50/60 — coverage 12.3%") carry a
+    stable machine name in `extra={"event": ...}`, so the log file and
+    `event_counts` get one key per kind of event rather than one per line.
+    Structured call sites (`_LOGGER.info("mission_blocked", ...)`) already use
+    the name as the message and need no extra.
+    """
+    event = getattr(record, "event", None)
+    return str(event) if event else record.getMessage()
+
+
 class _TickStamp(logging.Filter):
     """Stamps the loop's current tick on every record that lacks one.
 
@@ -100,7 +113,7 @@ class _JsonLinesFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         """Render a record as a single line of JSON."""
         payload: dict[str, object] = {
-            "event": record.getMessage(),
+            "event": _event_name(record),
             "tick": getattr(record, "tick", None),
             "level": record.levelname,
         }
@@ -126,7 +139,7 @@ class _JsonLinesHandler(logging.FileHandler):
     def emit(self, record: logging.LogRecord) -> None:
         """Write the record, then count it under its event name."""
         super().emit(record)
-        self.counts[record.getMessage()] += 1
+        self.counts[_event_name(record)] += 1
 
 
 class RunLog:

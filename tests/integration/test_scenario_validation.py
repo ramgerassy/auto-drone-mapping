@@ -313,6 +313,45 @@ class TestInstallScenario:
         assert problems
         assert self.everything_under(*roots) == []
 
+    @pytest.mark.parametrize("error", [PermissionError, FileExistsError])
+    def test_a_failed_final_write_leaves_no_half_room(
+        self,
+        roots: tuple[Path, Path],
+        monkeypatch: pytest.MonkeyPatch,
+        error: type[OSError],
+    ) -> None:
+        """If the scenario directory cannot be made, the scene is removed too.
+
+        A scene file with no scenario would block the name and list nowhere.
+        The failure is forced on that one `mkdir` — a filesystem fault, not a
+        simulator stand-in. An unexpected error propagates; a name taken in a
+        race is reported like any other clash.
+        """
+        scenarios_root, assets_dir = roots
+        target = scenarios_root / "my_room"
+        real_mkdir = Path.mkdir
+
+        def failing_mkdir(self: Path, *args: Any, **kwargs: Any) -> None:
+            if self == target:
+                raise error(17, "forced", str(self))
+            real_mkdir(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "mkdir", failing_mkdir)
+        config_text, scene_text = self.upload()
+
+        if error is FileExistsError:
+            problems = install_scenario(
+                "my_room", config_text, scene_text, scenarios_root, assets_dir
+            )
+            assert any("already exists" in p for p in problems)
+        else:
+            with pytest.raises(PermissionError):
+                install_scenario(
+                    "my_room", config_text, scene_text, scenarios_root, assets_dir
+                )
+
+        assert self.everything_under(scenarios_root, assets_dir) == []
+
 
 PILLAR_SCENE = """<mujoco model="pillar">
   <option timestep="0.01" gravity="0 0 -9.81"/>
