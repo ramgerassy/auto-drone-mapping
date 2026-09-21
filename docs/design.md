@@ -1,15 +1,16 @@
 # Design document — cooperative swarm mapping
 
-**Status:** Sprint 2 (multi-drone frontier exploration), Feature 6 (integration)
-**in progress**. Features 1–5 are implemented and merged into `sprint-2`;
-Feature 6 has landed the config schema, the CLI rewrite and the end-to-end
-tests; the acceptance suite and the scaling-KPI check are being written as this
-is drafted, and one convergence finding on `large_indoor` is open. Section 9
-lists what is not done.
+**Status:** Sprint 3 (robustness — the swarm survives losing a drone). Sections
+1–4 and 5.1–5.7 were written at the close of Sprint 2's Feature 6; Sprint 3
+added failure injection and detection (§5.8), run records and an operator
+console (§5.9), and updated §§2, 4, 6, 7, 8 and 9 to match. Where a Sprint-2
+passage has since been overtaken, [`progress.md`](progress.md) has the later
+measurement.
 
 This document describes the architecture and — more importantly — the reasoning
 behind it. The running decision log is [`progress.md`](progress.md); the
-per-feature plans are in [`sprint-2/`](sprint-2/). Where those disagree with the
+per-feature plans are in [`sprint-2/`](sprint-2/) and [`sprint-3/`](sprint-3/),
+indexed by [`sprint-3-plan.md`](sprint-3-plan.md). Where those disagree with the
 code, the code wins and this document follows the code.
 
 ---
@@ -32,7 +33,8 @@ Everything that would compete with that for attention is deliberately excluded.
 | Physics-based flight | Movement is teleport: one cell-step per tick, `mj_forward` only, never `mj_step`. Dynamics would introduce tuning, controller failure modes and float-order nondeterminism, none of which is the subject. |
 | Peer-to-peer / auction coordination | One `CentralizedMaster` orchestrates everything. The `Coordinator` seam exists so a `DistributedAuction` *could* be added; it is explicitly not built. |
 | Threading, async, queues | The tick loop is synchronous and sequential. Determinism is a hard requirement (§6) and concurrency is the cheapest way to lose it. |
-| Wind, failure injection, outdoor | Sprint 3+ scope. Sprint 2 stops at multi-drone exploration of indoor scenes. |
+| Wind, outdoor | Not built. Failure injection, originally listed here, arrived in Sprint 3 (§5.8). |
+| Drone recovery / rejoin | Failure is permanent (Sprint 3, locked decision 2). Nothing in the KPIs needs a drone to come back. |
 
 Scale is bounded on purpose: **1–5 drones**. Every algorithm here is chosen for
 correctness and legibility at that size, not for asymptotics. `NearestFrontier`
@@ -41,7 +43,8 @@ answer at 50 drones and the right one at 3.
 
 **Environment:** Python 3.13+ (`pyproject.toml` pins `requires-python >=3.13`;
 CLAUDE.md's "3.11+" is the floor, not what CI runs), MuJoCo, numpy, Pillow,
-PyYAML. `uv` for dependencies, `ruff` for lint and format, `mypy --strict` for
+PyYAML. Streamlit only in the optional `ui` extra, for the operator console
+(§5.9). `uv` for dependencies, `ruff` for lint and format, `mypy --strict` for
 types, `pytest` for tests.
 
 ---
@@ -53,11 +56,11 @@ Seven modules, each with one responsibility and a named interface at its edge.
 | Module | Responsibility | Interface(s) | Key types |
 | --- | --- | --- | --- |
 | `config` | Load and validate a scenario YAML at startup; fail fast | `parse_config` / `load_config` | `ScenarioConfig` and five frozen sub-configs |
-| `simulation` | Wrap MuJoCo: inject drone bodies, report poses, cast rays, teleport | `Localizer`, `RayCaster` | `SimulationEngine`, `Pose`, `RayHit` |
+| `simulation` | Wrap MuJoCo: inject drone bodies, report poses, cast rays, teleport; inject scripted failures | `Localizer`, `RayCaster` | `SimulationEngine`, `Pose`, `RayHit`, `FailureMode`, `FailureInjector` |
 | `perception` | Turn raw ray hits into world-frame observations; filter teammates | `Sensor` | `Rangefinder`, `RayObservation`, `ScanResult` |
 | `mapping` | Maintain the 2.5D grid by Bayesian log-odds update; detect frontiers; export | `Mapper` | `OccupancyGrid`, `FrontierRegion` |
 | `planning` | **Stateless.** Given map + drone cell + claimed frontiers, return a frontier and a path | `FrontierStrategy`, `PathPlanner` | `NearestFrontier`, `AStarPlanner`, `FrontierAssignment` |
-| `coordination` | Orchestrate the mission: tick loop, assignment, collision avoidance, termination | `Coordinator` | `CentralizedMaster`, `DroneState` |
+| `coordination` | Orchestrate the mission: tick loop, assignment, collision avoidance, failure detection, termination | `Coordinator` | `CentralizedMaster`, `DroneState`, `DroneHealth` |
 | `visualization` | Read-only live view for a human | `Renderer` | `LiveViewer` |
 
 `cli.py` is the composition root: it is the only module that imports from all of
@@ -66,6 +69,20 @@ deliberate — `Coordinator.tick()` advances exactly one step so the viewer can
 render between ticks and tests can inspect intermediate state, which a `run()`
 inside the coordinator would foreclose.
 
+Sprint 3 added two pieces outside the seven domain modules, one on each side of
+`cli.py`:
+
+- **`records.py`, below `cli`.** Owns the format of the two files every run
+  leaves behind, `log.jsonl` and `run.json` (§5.9). It imports no domain
+  module — it serialises plain data it is handed — so reading a run history
+  never imports the simulator, and nothing in it can perturb a mission.
+- **`app/`, above `cli`.** The operator console and the scenario validator
+  (§5.9). A new top layer, flagged as a new module in the sprint plan because
+  no existing one fits: `visualization` is read-only by definition, and a
+  console *starts* runs. **Nothing imports `app`.** It launches missions as a
+  subprocess of the CLI rather than calling into it, so the only way a mission
+  executes is still `cli.py`.
+
 ### 2.1 Dependency direction
 
 Dependencies run one way. The graph below is the **actual import graph**, read
@@ -73,7 +90,9 @@ off `src/`, not the idealized one:
 
 ```mermaid
 graph TD
+    app["app/<br/>console + validation<br/>(nothing imports it)"]
     cli[cli.py<br/>composition root]
+    rec["records.py<br/>(depends on nothing)"]
     coord[coordination]
     plan[planning]
     map[mapping]
@@ -82,6 +101,13 @@ graph TD
     vis[visualization]
     cfg["config<br/>(depends on nothing)"]
 
+    app --> cli
+    app --> rec
+    app --> cfg
+    app --> sim
+    app -.->|launches as a subprocess| cli
+
+    cli --> rec
     cli --> coord
     cli --> plan
     cli --> map
@@ -102,9 +128,10 @@ graph TD
     vis -.->|mujoco model/data only| sim
 ```
 
-Three notes where this differs from the table in CLAUDE.md, all of them
-acyclic and none of them a violation of the principle — but the document should
-describe what is there:
+Three notes on edges that differ from the idealized picture, all of them
+acyclic and none of them a violation of the principle. (Until Sprint 3,
+CLAUDE.md's own graph drew the first of these backwards and gave
+`visualization` edges it does not have; it now matches this one.)
 
 - **`mapping` imports `perception.types`.** `Mapper.integrate_scan` takes a
   `ScanResult`, so the data type flows *up* into `mapping` even though the data
@@ -117,6 +144,18 @@ describe what is there:
 - **`visualization` imports no domain module at all.** `LiveViewer` wraps
   MuJoCo's passive viewer over the `MjModel`/`MjData` the engine already owns,
   so watching the swarm needs no read access to the map or the coordinator.
+
+And two on the Sprint-3 layers:
+
+- **`app` imports `cli`, but only for validation.** `app/validation.py` calls
+  `build_mission` and `resolve_scene_path` so that a scenario is checked by the
+  same code that will run it (§5.9); a second copy of those rules would drift.
+  Running a mission is a different matter: the console builds a CLI command
+  line and launches it as a child process (the dashed edge), never
+  `run_pipeline` in-process.
+- **Only the console imports Streamlit.** `import swarm_mapping` — and
+  `app.runner`, `app.history`, `app.validation` — works without the `ui`
+  extra, which a test proves in a fresh interpreter with Streamlit blocked.
 
 **What enforces the direction:** nothing mechanical. There is no import-linter
 in CI; ruff enforces style and import *sorting*, mypy enforces types. The
@@ -193,11 +232,18 @@ a real test-double need counts, "might be nice later" does not.
 
 ## 4. Data flow — one mission tick
 
-`CentralizedMaster.tick()` runs three complete phases across the whole swarm:
-**sense → assign → move**. Not per-drone. If sensing and moving interleaved,
-drone 1 would plan against a map already containing drone 5's newest scan while
-drone 5 planned against a staler one; separate phases give every drone the same
-snapshot to reason about.
+`CentralizedMaster.tick()` runs complete phases across the whole swarm:
+**observe → sense → assign → move**. Not per-drone. If sensing and moving
+interleaved, drone 1 would plan against a map already containing drone 5's
+newest scan while drone 5 planned against a staler one; separate phases give
+every drone the same snapshot to reason about. The *observe* phase — heartbeats
+and failure declarations — was added in Sprint 3 and runs first for a reason
+given in §5.8.
+
+The CLI drives the tick through `Mission.tick()`, which first lets the
+`FailureInjector` apply any failure scheduled for that tick and then calls
+`master.tick()`. That is the one place the failure schedule meets the loop, and
+it sits in `cli`, not in `coordination`.
 
 ```mermaid
 sequenceDiagram
@@ -210,8 +256,14 @@ sequenceDiagram
     participant P as NearestFrontier + AStarPlanner
     participant Mv as movement.resolve_moves
 
+    CLI->>E: FailureInjector.apply(tick) (via Mission.tick)
     CLI->>M: tick()
-    Note over M,Map: PHASE 1 — sense (descending drone id)
+    Note over M,E: PHASE 0 — observe (descending drone id)
+    loop each drone not yet LOST
+        M->>E: heartbeat(drone_id)
+    end
+    M->>M: declare LOST / STUCK past a timeout; release its frontier
+    Note over M,Map: PHASE 1 — sense (drones heard this tick)
     loop each drone
         M->>S: scan(drone_id)
         S->>E: get_pose(drone_id), get_pose(teammates)
@@ -241,6 +293,7 @@ sequenceDiagram
     Mv-->>M: final cell per drone
     loop each drone that advanced
         M->>E: set_drone_position(id, grid_to_world(cell) + altitude)
+        M->>E: get_pose(id) — read back; state follows the localizer
     end
     M-->>CLI: (tick_count += 1)
 ```
@@ -249,16 +302,19 @@ Step by step, with the owner of each step:
 
 | Step | Owner | What happens |
 | --- | --- | --- |
+| 0. Observe | `coordination.CentralizedMaster` | Every drone not yet `LOST` is polled with `engine.heartbeat`. Missed heartbeats and unrealized moves are counted per drone; a drone past `heartbeat_timeout_ticks` or `stuck_timeout_ticks` is declared `LOST` or `STUCK` and its frontier released (§5.8). Only drones heard this tick go on to sense and move. |
 | 1. Sense | `perception.Rangefinder` | Pre-computed body-frame ray directions are rotated into the world frame by the drone's quaternion; `engine.cast_rays` runs `mj_ray` with the drone's own body excluded. Each hit within `max_range` becomes a `RayObservation`; a hit landing inside a teammate's exclusion sphere becomes a MISS truncated at the sphere **entry** point (§5.4). |
 | 2. Map | `mapping.Mapper` | Each observation is traced with `bresenham_2d` from the drone cell to the endpoint cell. HIT: every cell but the last gets `update_free`, the last gets `update_occupied(hit_z)`. MISS: every cell including the endpoint gets `update_free`. Log-odds increments are `+0.847` occupied / `-0.405` free, clamped to `±5.0`; height is `max(height, hit_z)` and never decays. |
 | 3. Detect frontiers | `mapping.frontier` | A frontier cell is a **free** cell (p < 0.4) with a 4-connected **unknown** neighbour (0.4 ≤ p ≤ 0.6). Cells are clustered 8-connected by BFS, regions below `min_frontier_size` are dropped, and each region returns a world centroid, a representative free cell nearest that centroid, and a size. Sorted by `(row, col)`. |
 | 4. Select | `planning.NearestFrontier` | For each unclaimed candidate, A\* from the drone's cell to `region.cell`; unreachable candidates are skipped. Score = integer path cost, plus `spread_penalty` if the centroid is within `spread_radius` of a claimed centroid. Ties break on `(score, row, col)`. |
 | 5. Plan | `planning.AStarPlanner` | 8-connected A\* with an octile heuristic, integer costs 10/14, no corner-cutting, occupied *and* unknown cells blocked, known-occupied cells inflated by the clearance radius (§5.6). |
 | 6. Resolve moves | `coordination.movement` | Each drone's desired next cell is `path[path_index + 1]`. Drones are considered in descending id order against a reservation table seeded with every drone's *current* cell; a move is taken only if the target is at least `min_separation_cells` from every reservation, otherwise the drone holds and its `waited_ticks` increments. |
-| 7. Teleport | `coordination.CentralizedMaster` | `grid_to_world(cell)` plus the mission altitude is written to the drone's freejoint `qpos`; the quaternion is reset to identity, `qvel` zeroed, `mj_forward` recomputes kinematics. `mj_step` is never called during a mission — there is no contact resolution, which is exactly why the planner must model the body itself. |
+| 7. Teleport | `coordination.CentralizedMaster` | `grid_to_world(cell)` plus the mission altitude is written to the drone's freejoint `qpos`; the quaternion is reset to identity, `qvel` zeroed, `mj_forward` recomputes kinematics. `mj_step` is never called during a mission — there is no contact resolution, which is exactly why the planner must model the body itself. Since Sprint 3 the master then **reads the pose back** and snaps it to the grid; `DroneState.cell` is what the localizer says, not what was commanded (§5.8). |
 
 The mission terminates when every drone ends `_assign` unassigned
-(`is_complete`), or when the CLI's `max_ticks` cap fires.
+(`is_complete`) — which includes the case where no drone is `ACTIVE` any more —
+when `no_progress_ticks` pass without a newly classified cell, or when the
+CLI's `max_ticks` cap fires.
 
 ---
 
@@ -587,6 +643,228 @@ asserted lattice alignment on every face before emitting, and the committed
 tests re-assert it against the **parsed model**, because a test that greps XML
 proves nothing about what MuJoCo loaded.
 
+### 5.8 Failure handling: injected in `simulation`, detected in `coordination`
+
+The one idea Sprint 3 hangs on: **the master never reads the failure
+schedule.** A coordinator that is told which drone failed has detected nothing.
+It has to infer failure from what a real ground station would see — silence, or
+commanded moves that did not happen.
+
+So the two halves live on opposite sides of the dependency graph:
+
+- **Injection** is in `simulation`. `SimulationEngine.fail_drone(id, mode)`
+  fails a drone permanently; `FailureInjector` applies a scenario's
+  `failures:` schedule, sorted by `(tick, drone_id)`, before the scheduled tick
+  runs, and logs `failure_injected`. A failed drone's motors ignore
+  `set_drone_position` in both modes — the command is dropped, not rejected,
+  because the caller cannot know the drone failed, and finding that out is the
+  point. A schedule naming a drone that is not in the run (say, after a
+  `--drones` override) is a `ValueError` at startup: the alternative is a
+  failure scenario that quietly runs with no failure, and a recovery check that
+  passes for the wrong reason.
+- **Detection** is in `coordination`. `CentralizedMaster` takes no schedule —
+  its constructor has no parameter for one, and a test asserts that — and its
+  diagnosis is a separate type, `DroneHealth` (`ACTIVE` / `LOST` / `STUCK`), not
+  the simulator's `FailureMode`. Tests compare the two; the master only ever
+  sees symptoms.
+- `config` stays dependency-free: it validates `mode` as a string in
+  `{"silent", "stuck"}`, and `cli` maps it to `FailureMode`.
+
+The diagnosis reaches the outside as `health` on the frozen `DroneState`, which
+`Coordinator.drone_states` already exposes — so the `Coordinator` seam's
+signature did not change.
+
+**Two failure modes, two detectors.** Both modes ignore motion commands. They
+differ in what the drone still *reports*, which is exactly why each needs its
+own detector:
+
+| Mode (injected) | What the simulator does | What the master observes | Diagnosis | Timeout |
+| --- | --- | --- | --- | --- |
+| `silent` — crash, comms loss | no heartbeat, no scan, no motion | `heartbeat()` returns False | `LOST` | `heartbeat_timeout_ticks` consecutive missed heartbeats |
+| `stuck` — motor fault | heartbeat and sensor continue; moves do not happen | a granted, commanded step that the localizer says did not happen | `STUCK` | `stuck_timeout_ticks` consecutive unrealized moves |
+
+Both timeouts are **required** keys under `coordination`, set to 3 in every
+shipped scenario, and must be **≥ 1** — in `config` and again in
+`CentralizedMaster.__init__`. There is deliberately no value that switches
+detection off: a missing key is a startup error, not a silent default.
+
+**Tick order: observe → sense → assign → move.** Declarations happen in the
+new `_observe` phase, which runs *first*. That ordering is what lets a failure
+declared on tick *t* release its frontier before tick *t*'s own assignment
+pass hands frontiers out, so a teammate can take it up on the declaring tick.
+Declaring at the end of `_move` instead would have added a tick of latency to
+every reassignment. A test pins this: moving `_observe` after `_assign` makes
+`test_the_released_frontier_is_handed_out_on_the_declaring_tick` fail. It is
+also why detection latency *is* reassignment latency here (§8).
+
+**The master trusts the localizer, not its own commands.** Before Sprint 3,
+`_move` teleported a drone and wrote the *commanded* cell straight into
+`DroneState.cell`. That was a latent bug independent of failure: the master's
+belief about where a drone is should come from the `Localizer`, not from a log
+of what it asked for. It had never bitten because a healthy teleport always
+lands. Now `_move` teleports, reads the pose back through
+`SimulationEngine.get_pose` (which delegates to `GroundTruthLocalizer`), and
+snaps it to the grid. If the drone did not arrive, the state follows the
+localizer, the path does not advance, and the unrealized-move count goes up.
+For a healthy drone the read-back is exact — a cell centre round-trips through
+`world_to_grid` — so every run without failures had to reproduce its earlier
+tick count exactly. It does: `small_indoor` at 1/2/3 drones runs 498/254/197
+ticks with identical coverage and identical map hashes before and after the
+change, and `tests/integration/test_zero_regression.py` guards the ticks and
+coverage on every push.
+
+Four rules that had to be decided rather than coded:
+
+1. **No heartbeat ⇒ no action.** A drone that missed its heartbeat sent no
+   telemetry, so there is no scan to integrate and it is not commanded that
+   tick. That also means no motion evidence accumulates, so a silent drone can
+   never be misdiagnosed as stuck. The accepted consequence: until it is
+   declared, a silent drone is still `ACTIVE` and keeps its claim — that hold,
+   at most `heartbeat_timeout_ticks` long, *is* the latency the KPI measures.
+   Within that window the assignment pass may even hand it a new claim if its
+   target evaporates; that claim is released on declaration like any other.
+2. **Waiting is not stuck.** The unrealized counter counts only moves that
+   `resolve_moves` *granted* and the drone then failed to make. A drone holding
+   position to yield to a teammate was never commanded to move, so yielding can
+   never look like a fault. `test_a_yielding_drone_is_never_stuck` needed its
+   start positions moved closer (0.75 m → 0.5 m) before any drone actually
+   yielded — at 0.75 m the mission produced zero wait-ticks, and the test
+   would have passed vacuously.
+3. **A `STUCK` drone keeps sensing; a `LOST` one does not.** The stuck drone's
+   heartbeat and sensor still work, so its scans still reach the map before and
+   after declaration. It is never commanded again. A `LOST` drone is not
+   polled again at all.
+4. **A failed drone is a static body.** It is never assigned, never counted as
+   idle and never sent home, but it stays in `resolve_moves`'s reservation table
+   with its last cell, so no teammate comes within `min_separation` of the
+   wreck.
+
+**Wrecks are planned around in an overlay, never written to the map.** A failed
+drone in a doorway would otherwise leave teammates planning straight through
+it. The map deliberately contains no drones — that is what the teammate filter
+(§5.4) is for, and the ≥98% accuracy KPI depends on it — so the wreck goes into
+a **planning-only copy** of the grid: `_planning_grid()` marks each wreck's
+footprint at +2.0 log-odds, well past the occupied band, using the same overlap
+rule as clearance inflation (`k = ceil(h/res + 0.5) − 1`, which is 1 cell at
+every shipped resolution). Assignment and return-to-base routes plan on that
+copy; the exported map never sees it, and a test asserts so. One benign
+exception is documented at the call site: the overlay also reaches the
+frontier-cell set `assign_all` uses to decide whether a committed target still
+exists, which can only drop frontiers under a wreck's footprint — unreachable
+anyway. The accepted cost is a full grid copy on every tick a wreck exists
+(and one more per return-to-base route planned).
+
+**The whole swarm lost.** When no drone is `ACTIVE`, every state holds no
+assignment, so the mission completes through the existing `is_complete` path —
+reported `blocked` if frontiers remain — and logs `swarm_lost` once. No special
+termination code, no infinite loop on an empty swarm.
+
+**A stuck drone that is never commanded is undetectable — by design.** Stuck
+detection needs a commanded move to fail. A drone whose motors jam while it has
+nowhere to go produces no symptom, and a motor fault on an idle drone harms
+nothing. That case is reported as "undetected (never commanded)", not as a KPI
+miss. This is why both failure scenarios fail drone 1 at tick 300, when it holds
+a target.
+
+**What a tick is worth in seconds (D1).** The KPI is "< 2 s", but a tick had no
+duration: `tick()` never advances MuJoCo time and a step is a one-cell
+teleport. `drones.cruise_speed` (m/s, required) gives it one:
+`ScenarioConfig.tick_seconds = map.resolution / cruise_speed`. Timeouts stay in
+ticks, matching every other `*_ticks` setting. At 1.0 m/s on `large_indoor`'s
+0.2 m cells a tick is 0.2 s, so the KPI is < 10 ticks. The seconds are
+**nominal** — derived from a configured speed, not from simulated physics —
+and that is the honest reading of any latency figure quoted in them.
+
+### 5.9 Run records and the operator console
+
+**Every run records itself.** Whether launched from a terminal or the console,
+`run_pipeline` writes into its `--output` directory:
+
+| File | What it is |
+| --- | --- |
+| `log.jsonl` | Every log record the `swarm_mapping` logger tree emitted at INFO and above, one JSON object per line, each with `event` and `tick`. This is CLAUDE.md's logging convention ("JSON Lines, per-run output directory"), which the stderr-only logging of Sprints 1–2 never met. |
+| `run.json` | Schema version, start time, the run's **inputs** (resolved config path, a snapshot of the `ScenarioConfig` actually run with CLI overrides applied, drones flown, assignment, target tolerance, variant label, view) and **outputs** (ticks, coverage, blocked, unreachable frontiers, tick-capped, succeeded, wall seconds, per-drone path stats, event counts, files written). Written atomically. |
+| `map.npz`, `map.png` | The 2.5D map, as before. |
+| `paths.json`, `route_drone_<id>.png` | Each drone's path, always written, so every run in the history can show its routes. |
+| `visits_drone_<id>.png` | Only with `--visit-heatmaps`. |
+
+Event names are machine names matching `^[a-z][a-z0-9_]*$`, which a test
+enforces on every line and every `event_counts` key: `mission_started`,
+`mission_progress`, `failure_injected`, `drone_failed` (with `drone_id`,
+`health`, `tick`, `released`), `swarm_lost`, `assignment_dropped`,
+`frontier_exhausted`, `returning_to_base`, `mission_blocked`,
+`mission_stalled`. The first cut used the CLI's prose messages as event names,
+so every "Tick 50/…" line became its own key; review caught it, and the fix
+names the event with an `event` extra while leaving the stderr text unchanged.
+`tick` in a log line means ticks *completed* when it was written — the master's
+own convention — so a stamped tick and a caller-supplied one agree.
+
+**Determinism reaches the logs.** Log lines carry no timestamps, so two runs of
+the same inputs produce **byte-identical `log.jsonl`** as well as identical
+maps. The only wall-clock readings in a record are `started_at` and
+`wall_seconds`. The test that re-runs a run from its own record asserts
+identical map bytes, identical log bytes, and an identical record apart from
+those two fields and `config_path` (the replay reads a copy of the file). `run.json`'s config snapshot is `asdict` of the
+parsed config, so it is not itself loadable as a scenario YAML (two keys are
+spelled differently); `config_path` plus the recorded overrides re-run it.
+
+**A run that fails validation leaves nothing behind.** `run_pipeline` loads the
+config, applies overrides and builds the mission *before* creating the output
+directory, so a bad config produces an error and no half-written run.
+
+**Validation runs on the compiled scene.** `app.validate_scenario` never
+raises; it returns a list of problems. In order: the config must load; the
+scene file must exist (checked before MuJoCo is touched); optionally, exactly
+five start positions must be declared; every spawn is placed in the real
+MuJoCo scene and **every contact between a drone and scene geometry** becomes a
+problem naming the spawn index and the geoms; finally `build_mission` must
+succeed, which enforces spawn separation through `CentralizedMaster`. Each rule
+is checked by the component that already owns it rather than re-implemented,
+because a second copy would drift. One stated gap: a geom with `contype=0` and
+`conaffinity=0` produces no contacts, so a spawn inside one would pass. No
+shipped scene has one.
+
+**Installing a room never overwrites.** An uploaded room is a config plus its
+MJCF scene — a config alone could only point at a scene that already exists.
+`install_scenario` requires a name matching `[a-z][a-z0-9_]{0,40}` in full (no
+`/`, no `.`, so it cannot climb out of either root), refuses if anything by
+that name already exists, validates the upload in a temporary directory with
+**five spawns required** ("can spawn up to 5 drones" means every one of five is
+usable), and only then writes the scene and config with exclusive-create
+opens. If the final write fails, the scene it already wrote is removed. An
+invalid upload writes nothing.
+
+**The console is the CLI, in a subprocess.** `swarm_mapping.app` is a
+Streamlit console with three pages — **Run**, **Scenarios**, **History** — and
+it never runs a mission in-process. The Run page builds the same argument list
+a user would type (`python -m swarm_mapping.cli --config … --output …
+--drones N --assignment … --target-tolerance …`, plus `--view` when asked) and
+launches it as a child process into its own `runs/<timestamp>_<scenario>_<variant>_<N>d/`
+directory, with the child's stdout and stderr in `console.txt`. Three things
+follow: a console run is byte-identical to the same CLI run, the MuJoCo viewer
+gets its own process, and the UI cannot perturb the mission. The four
+allocation variants are labelled as allocation variants, not strategies — Sprint
+2.5 showed `FrontierStrategy` is not what they change:
+
+| Label | `coordination.assignment` | `target_tolerance_cells` |
+| --- | --- | --- |
+| baseline | `greedy` | 0 |
+| A | `global` | 0 |
+| B | `greedy` | 3 |
+| A+B | `global` | 3 |
+
+The logic lives outside the UI: `app/runner.py` (argument list, run
+directories, launch) and `app/history.py` (table rows, run comparison, log
+parsing) are plain Python with their own tests; `console.py` is layout only. A
+test checks the runner's flag spellings against the CLI's own parser, so the
+two cannot drift.
+
+**Streamlit is an optional extra.** It is a heavy dependency, so it lives in
+`[project.optional-dependencies] ui` and never in the core install: the
+simulator, CI and the Docker image stay as lean as before. `uv sync --extra ui`
+installs it; `uv run swarm-console` starts the console, and prints the install
+hint instead if the extra is missing.
+
 ---
 
 ## 6. Determinism
@@ -613,6 +891,16 @@ Techniques actually used:
 Two determinism tests are in the e2e suite: two runs of the same config produce
 **byte-identical `.npz`**, and two runs agree on the whole `MissionResult`.
 
+Sprint 3 extended the discipline to the two new things that could have broken
+it:
+
+| Technique | Where | Why it matters |
+| --- | --- | --- |
+| **Scripted failures, no RNG** | `FailureInjector` | Failures fire at ticks written in the scenario YAML, sorted by `(tick, drone_id)`, with `<=` so a skipped tick cannot skip a failure. A "random failure" mode would have made every failure run unrepeatable. `test_a_failure_run_is_deterministic` asserts two runs of the same failure scenario agree on tick count and on the tick each `drone_failed` fires. |
+| **Detection in sorted order** | `CentralizedMaster._observe` | Heartbeats are polled and declarations made in the same descending-id order as the rest of the tick, so two drones crossing a timeout on one tick are always declared in the same order. |
+| **Byte-identical run logs** | `records` | Log lines carry no timestamps and `event_counts` is sorted, so two runs of the same inputs produce the same `log.jsonl` byte for byte. Wall-clock time appears only in `run.json`'s `started_at` and `wall_seconds`, and in the console's run-directory *names* — never in a mission input. |
+| **One execution path** | `app` | The console launches the CLI as a subprocess instead of calling it, so there is no second way to run a mission that could drift from the first. |
+
 A performance note that follows from the same discipline: an available
 micro-optimization (thresholding `log_odds` directly instead of calling
 `probability()`, avoiding one `exp` over all N cells) was **deferred** because it
@@ -632,14 +920,44 @@ Every test module declares the sprint it was introduced in with
 `CURRENT_SPRINT` constant and derives two selectable groups from that one tag:
 
 - **regression** — tests from sprints *before* the current one. Already-shipped
-  behaviour that must not break. Runs on every push, and as a pre-commit hook.
-- **progression** — tests from the *current* sprint: the work in flight. Runs on
-  pull requests to `main`.
+  behaviour that must not break.
+- **progression** — tests from the *current* sprint: the work in flight.
 
-When a sprint closes, `CURRENT_SPRINT` is bumped by one and last sprint's
+At each sprint kickoff `CURRENT_SPRINT` is bumped by one and last sprint's
 progression tests become regression with **no re-tagging**. A test carrying no
-sprint marker escapes both gates, so `pytest_collection_modifyitems` emits a
+sprint marker escapes both labels, so `pytest_collection_modifyitems` emits a
 warning naming it.
+
+**The labels label; they do not select.** That sentence is the Sprint 3 fix
+(Task 0) to a gate that had been quietly wrong since Sprint 1:
+
+- `CURRENT_SPRINT` was still `2` after Sprint 2 and Sprint 2.5 closed, so all
+  283 of their tests were still "progression", and **every push ran 103 of the
+  365 tests** — Sprint 1's 82 plus sanity.
+- Worse, the gates *split* the suite instead of covering it: push ran
+  `regression or sanity`, PR to `main` ran `progression or sanity`. **No CI gate
+  had ever run the whole suite.** A bare bump would only have moved the hole —
+  the push gate would have picked up the acceptance tests, and the sprint's PR
+  to `main` would have skipped every earlier test.
+
+The gates now run **both labels on every push**, as separate steps, so a red
+build still says whether shipped behaviour broke or in-flight work is not done:
+
+| Gate | Steps |
+| --- | --- |
+| push (any branch) | **Regression** `-m "regression and not acceptance"`, then **Progression** `-m "progression and not acceptance"` (exit code 5, "no tests collected", is accepted so an empty progression set at sprint start passes) |
+| PR → `main` | the same two, with coverage (`--cov`), then **Acceptance** `-m acceptance` |
+
+At the switch the Regression step ran 358 tests. **Coverage is collected only
+on PRs to `main`.** With `--cov` on every push, the push gate measured
+**6 min 9 s** against CLAUDE.md's 5-minute per-commit budget, so pushes run the
+two labels without `--cov` to stay inside it.
+
+**The forgotten bump now fails loudly.** It was missed twice, silently. A test
+tagged with a sprint *ahead of* `CURRENT_SPRINT` now raises a
+`pytest.UsageError` at collection with a message saying to bump the constant —
+which is exactly the moment the first new-sprint test is written, so the
+mistake is caught the first time it can happen.
 
 Two further markers select *cost*, orthogonally to era:
 
@@ -652,7 +970,16 @@ Two further markers select *cost*, orthogonally to era:
 Runtime is a real constraint here, not a formality: `tests/integration/test_e2e.py`
 alone takes ~108 s and the full suite ~113 s against CLAUDE.md's <5 min
 per-commit budget, while a single `large_indoor` 3-drone acceptance run takes
-~279 s. That gap is exactly what the `acceptance` marker is for.
+~279 s. That gap is exactly what the `acceptance` marker is for. (Those are
+Sprint 2 figures; the Sprint 3 push-gate time is above.)
+
+**The console's UI tests are deliberately not run in CI.** The console is an
+optional extra, not core: it needs to work, but it is not CI-gated. CI installs
+without the `ui` extra, so `tests/unit/test_app/test_console.py` — the 11
+Streamlit `AppTest` tests — skips there via `pytest.importorskip`. The
+plain-Python app tests do run in CI: the other 37 in `tests/unit/test_app`
+(runner, history, launch) and the scenario-validation suite in
+`tests/integration/`. Locally, `uv sync --extra ui` makes the UI tests run too.
 
 ### 7.2 No mocking of MuJoCo
 
@@ -741,8 +1068,25 @@ tests prove the contract is understood.
 | 1 | Map accuracy ≥98% per-cell | Per-cell classification against a truth grid built from the parsed MJCF box geoms (`tests/scene_truth.py`). | Helper extracted to `tests/scene_truth.py` and parameterized by `MapConfig`; `test_classified_cells_match_ground_truth` is **in flight** — no measured figure recorded here yet. |
 | 1 | Zero collisions in nominal ops | Drone↔obstacle: guaranteed by construction (A\* traverses only free cells, refuses corner-cutting, and refuses cells inside the clearance mask — re-checked every tick against committed paths). Drone↔drone: `resolve_moves` enforces `min_separation` on end-of-tick positions. | Enforced and unit-tested; the whole-mission assertion (`test_no_two_drones_ever_breach_separation`) is **in flight**. |
 | 2 | Scaling speedup ≥1.5× (1→3 drones, small indoor) | **Ticks to reach 95% coverage**, 1 drone vs 3. Deterministic and directly comparable; wall-clock was rejected because per-tick compute *rises* with drone count, so adding drones could worsen the number while the swarm genuinely explores faster. Both arms come from one config file via `--drones N`, which takes the **first N** start positions — a second config file could drift and make the KPI lie rather than fail. | `tests/acceptance/test_scaling_kpi.py` is **in flight**; no measured ratio recorded here yet. |
-| 2 | Frontier reassignment latency <2 s | Ticks between a target being invalidated and a new assignment. | **Not yet measured.** Failure injection is Sprint 3; within Sprint 2 the measurable version is reassignment after a frontier evaporates. |
+| 2 | Frontier reassignment latency <2 s | Ticks from `failure_injected` to `drone_failed` (the declaration that releases the failed drone's claim), × `tick_seconds` (§5.8). Because declaration runs before the same tick's assignment pass, detection latency *is* reassignment latency. `benchmarks/failure_recovery.py`, `large_indoor`, 5 drones, drone 1 failed at tick 300. | **Met.** Silent → `LOST` in **2 ticks = 0.40 s**; stuck → `STUCK` in **3 ticks = 0.60 s**. Both < 2 s (tick = 0.2 s). Seconds are nominal (D1). |
+| 1 | Coverage ≥95% indoor, **with a drone lost** | Same coverage measure, same benchmark; the mission must also reach its own terminal state, not `max_ticks`. | **Met.** **97.37%** in both failure modes — equal to the healthy run. Neither run was tick-capped. |
+| 1 | Zero collisions, including with the wreck | A failed drone stays in `resolve_moves` as a static body; teammates plan around it on the overlay (§5.8). | Unit-tested (`test_teammates_keep_their_distance_from_the_wreck`, the wreck-routing tests). |
 | 3 | Wall-clock per scenario, path length per drone, merge conflict rate, communication volume | Measured, not committed. `FrontierAssignment.cost` is kept unpenalized specifically so it remains a truthful path length. | Merge conflict rate and communication volume are structurally N/A in this architecture: one shared `Mapper`, one in-process master. |
+
+**What losing a drone costs.** Recovery is not free, and the price is in
+mission length rather than coverage (`large_indoor`, 5 drones):
+
+```
+scenario            ticks  t@95%     cov   health  latency
+large_indoor          894    517  97.37%        —        —
+failure_injection    1289    579  97.37%     lost   2 ticks = 0.40 s
+failure_stuck        1369    579  97.37%    stuck   3 ticks = 0.60 s
+```
+
+Total ticks rise **+44%** (silent) and **+53%** (stuck); time to 95% coverage
+rises **+12%** in both. The swarm reaches the coverage target nearly on time and
+spends the extra ticks on the tail. A fast integration test on `small_indoor`
+(drone 2 failed at tick 40, 3 drones) guards the same behaviour on every push.
 
 **`--drones N` never invents a start position.** A fabricated one would have to
 be collision-free, inside the grid, and `min_separation` clear of its
@@ -816,8 +1160,39 @@ and a `DistributedAuction` would owe the same answer.
   below.
 - **`--view` with 3 drones has never been run** — the development session has no
   display. It is in the feature's "done when".
-- **`README.md` still describes the Sprint-1 lawnmower patrol**, which Feature 6
-  deleted. It needs updating with this document.
+
+**Open, from Sprint 3:**
+
+- **A stuck drone that is never commanded is undetectable — by design.** Stuck
+  detection needs a commanded move to fail; a motor fault on a drone with
+  nowhere to go produces no symptom and harms nothing (§5.8).
+- **The `FrontierStrategy` seam is bypassed under `assignment: global`.**
+  Carried from Sprint 2.5 (`progress.md`, 2026-09-21): in global mode
+  `coordination/allocation.py` chooses the target and the strategy is handed a
+  one-element list, so `NearestFrontier` only routes. Variants A and A+B run
+  in this mode.
+- **Console UI tests run only locally**, with `uv sync --extra ui` (§7.1).
+- **A browser reload loses the console's handle on a live run.** The process
+  handle lives in the Streamlit session; the run still finishes and appears in
+  History, but the Run page no longer tracks it and nothing stops a second run
+  being launched alongside it.
+- **The console's non-zero-exit warning is worded too broadly.** It says the
+  mission "stopped short (blocked or tick-capped) or the run crashed", but a
+  blocked run exits 0 (§8.1); a non-zero exit means tick-capped or crashed.
+- **Every console rerun re-validates every scenario**, including the MuJoCo
+  contact check on each scene. Not measured as a problem yet; the fix, if it
+  becomes sluggish, is caching on file modification times.
+- **`SWARM_ASSETS_DIR` set to a non-default directory is a test hook only.** A
+  room installed there is written with a relative `scene.path`, but the CLI
+  resolves relative scene paths against the bundled assets, so the room would
+  then list as invalid. The default — the bundled assets directory — works.
+- **`run.json`'s config snapshot is not loadable as a scenario YAML** (two keys
+  are spelled differently). Re-running uses `config_path` and the recorded
+  overrides; an inverse mapping was deferred until something needs "re-run
+  this record".
+- **The pre-commit hook runs `regression or sanity`**, which since the Task 0
+  bump also selects the 7 acceptance tests from earlier sprints — minutes, not
+  seconds, on a commit that stages Python files.
 
 **Structural, accepted:**
 
@@ -852,8 +1227,9 @@ and a `DistributedAuction` would owe the same answer.
 SLAM behind `Localizer`; a depth-camera `Sensor`; `InformationGainFrontier`
 behind `FrontierStrategy`; `DistributedAuction` behind `Coordinator`;
 physics-based flight (and with it RRT\* plus path smoothing, which only become
-relevant once there are dynamics); wind; failure injection and recovery; the
-outdoor scenario; a live map dashboard.
+relevant once there are dynamics); wind; drone recovery and rejoin after a
+failure; the outdoor scenario; a live map overlay (Sprint 3 built an operator
+console instead — `sprint-3-plan.md`, D2).
 
 ---
 
@@ -875,3 +1251,9 @@ Every measured figure in this document is traceable. Sources:
 | Suite 113 s, e2e 108 s, acceptance run 279 s | `sprint-2/feature-6-handoff.md` |
 | Body 0.30 m, exclusion 0.30 m, corner 0.212 m, floor 0.4243 m | `src/swarm_mapping/simulation/engine.py`, `coordination/master.py` |
 | Log-odds +0.847 / −0.405, clamps ±5.0 | `src/swarm_mapping/mapping/types.py` |
+| Latency 2 ticks / 0.40 s (silent), 3 ticks / 0.60 s (stuck); 894/1289/1369 ticks; t@95% 517/579/579; 97.37% | `benchmarks/failure_recovery.py` → `failure_recovery.json` (Feature 11); `progress.md`, 2026-09-21 |
+| `small_indoor` 498/254/197 ticks unchanged by pose read-back | Feature 10 zero-regression check; `tests/integration/test_zero_regression.py` |
+| 103 of 365 tests per push; 283 stranded; 358 regression at the switch | `sprint-3-plan.md`, Task 0; commit `53fae7b` |
+| CI push gate 6 min 9 s | A Sprint 3 GitHub Actions run with `--cov` on push; `progress.md`, 2026-09-21 |
+| Wreck overlay +2.0 log-odds; timeouts 3/3 | `src/swarm_mapping/coordination/master.py`; scenario YAMLs |
+| 11 console `AppTest` tests; 37 other `test_app` tests | Feature 13 report |
