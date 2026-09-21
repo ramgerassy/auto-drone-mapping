@@ -26,6 +26,7 @@ from numpy.typing import NDArray
 from swarm_mapping.config.loader import load_config
 from swarm_mapping.config.schema import ScenarioConfig
 from swarm_mapping.coordination.master import CentralizedMaster
+from swarm_mapping.coordination.types import DroneHealth
 from swarm_mapping.mapping.export import (
     save_npz,
     save_png,
@@ -96,6 +97,12 @@ class MissionResult:
         unreachable_frontiers: Frontier regions still detected at termination.
         tick_capped: True if the mission stopped because it hit `max_ticks`
             rather than because the coordinator was done.
+        swarm_lost: True if every drone was failed (`DroneHealth` is not
+            `ACTIVE` for all of them) by the time the mission ended. Derived
+            from `CentralizedMaster.drone_states` at the end of the run, not
+            stored on the `Coordinator` Protocol — a coordinator that lost
+            its whole swarm still reports `is_complete=True` (nothing is left
+            to assign), so this is the one signal that catches it.
         npz_path: Where the map data was written.
         png_path: Where the map image was written.
     """
@@ -105,12 +112,13 @@ class MissionResult:
     blocked: bool
     unreachable_frontiers: int
     tick_capped: bool
+    swarm_lost: bool
     npz_path: Path
     png_path: Path
 
     @property
     def succeeded(self) -> bool:
-        """True if the mission reached its own terminal state.
+        """True if the mission reached its own terminal state with a live swarm.
 
         Deliberately **not** `not blocked and not tick_capped`. Body-clearance
         inflation always leaves a few wall-adjacent frontiers that can be seen
@@ -119,8 +127,16 @@ class MissionResult:
         regions left. Failing on `blocked` would exit non-zero on the happy
         path. Only the tick cap means the mission genuinely did not converge;
         `blocked` is reported for the operator to read against coverage.
+
+        `swarm_lost` is checked separately because it is not caught by
+        `tick_capped`: a coordinator with no drones left to assign reports
+        `is_complete=True` (there is nothing left to plan for), so a mission
+        that lost every drone reaches its own terminal state without ever
+        hitting the tick cap. A run in that state did not finish its job —
+        it stopped because there was no one left to do it, which is a
+        failure to report, not a success.
         """
-        return not self.tick_capped
+        return not self.tick_capped and not self.swarm_lost
 
 
 @dataclass(frozen=True)
@@ -595,6 +611,13 @@ def _run_recorded(
             # `is_complete` is the coordinator's own terminal signal. If
             # the loop stopped without it, the cap is what stopped us.
             tick_capped=not master.is_complete,
+            # From the public `drone_states` view, not a new property on the
+            # `Coordinator` Protocol or `CentralizedMaster` — this is a
+            # derived read, not a named seam.
+            swarm_lost=all(
+                state.health is not DroneHealth.ACTIVE
+                for state in master.drone_states.values()
+            ),
             npz_path=npz_path,
             png_path=png_path,
         )
@@ -647,6 +670,8 @@ def _report(result: MissionResult) -> None:
     """Print a mission summary that distinguishes finishing from giving up."""
     if result.tick_capped:
         outcome = f"STOPPED at the {result.ticks}-tick cap — mission incomplete"
+    elif result.swarm_lost:
+        outcome = f"SWARM LOST after {result.ticks} ticks — every drone failed"
     elif result.blocked:
         outcome = (
             f"BLOCKED after {result.ticks} ticks — "
