@@ -70,10 +70,10 @@ addopts = "--strict-markers"
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "sprint(n): sprint the test was introduced in; drives the regression/progression split (see tests/conftest.py)",
-    "regression: derived from sprint(n) — prior-sprint tests that must not break (PR gate)",
-    "progression: derived from sprint(n) — current-sprint tests (per-commit gate)",
+    "regression: derived from sprint(n) — prior sprints; shipped behaviour that must not break. Runs on every push (see tests/conftest.py)",
+    "progression: derived from sprint(n) — current sprint; work in flight. Runs on every push (see tests/conftest.py)",
     "sanity: fast, minimal cross-module health check; keep it small and quick",
-    "acceptance: full-scenario runs with tolerance bands; minutes, not seconds. Selects COST, not era — acceptance tests still carry sprint(n). CI runs them on PRs to main (progression gate), never on push. Deselect locally with -m 'not acceptance'.",
+    "acceptance: full-scenario runs with tolerance bands; minutes, not seconds. Selects COST, not era — acceptance tests still carry sprint(n). CI runs them as their own step on PRs to main, never on push. Deselect locally with -m 'not acceptance'.",
 ]
 
 [tool.hatch.build.targets.wheel]

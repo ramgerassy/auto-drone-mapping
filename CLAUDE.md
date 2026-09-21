@@ -218,8 +218,10 @@ If I suggest any of these, push back:
 
 Update this section each sprint so Claude Code knows what's in-flight.
 
-**Sprint 2 — Multi-drone exploration (in progress).** Goal: multiple drones with a real planner explore a real environment using frontier-based exploration. Adds `planning` module (frontier detection, `NearestFrontier` strategy, A\*), extends `coordination` (frontier assignment, claimed-frontiers list, spatial spreading penalty), extends `mapping` with a `get_frontiers()` API. Adds the large indoor environment. Out of scope: wind, failure handling, outdoor, live dashboard.
+**Sprint 3 — Robustness (in progress).** Goal: system handles drone failure. Adds failure handling to `coordination` (heartbeats, stuck-drone detection, frontier reclaim), and the live `visualization` dashboard. Adds failure-injection scenarios. Out of scope: acceptance tests, CI, second FrontierStrategy.
 
-Current focus: `planning` module — frontier detection algorithm, `FrontierStrategy` interface with `NearestFrontier` implementation, and A\* path planner.
+Current focus: `coordination` — heartbeat and reassignment logic — plus scenario asset for failure injection.
 
-**Sprint 1 (complete).** One drone follows hardcoded patrol path in small indoor scenario, produces `.npz` + `.png` map. Full data pipeline works end-to-end. Modules built: `config`, `simulation` (with `Localizer` + `RayCaster`), `perception` (rangefinder + world-frame observations), `mapping` (occupancy grid + Bayesian update), `coordination` (tick loop with hardcoded path).
+**Sprint 2 (complete).** Frontier-based multi-drone exploration in large indoor scenario. Added `planning` module (frontier detection, `NearestFrontier` + `PathPlanner`), extended `coordination` (assignment, claimed-frontiers list, spatial spreading), extended `mapping` with `get_frontiers()`.
+
+**Sprint 1 (complete).** One drone follows hardcoded patrol in small indoor. Full data pipeline works end-to-end. Modules built: `config`, `simulation`, `perception`, `mapping`, `coordination` (tick loop only).

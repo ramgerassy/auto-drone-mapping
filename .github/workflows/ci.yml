@@ -24,22 +24,27 @@ jobs:
         run: uv sync
 
       - name: Ruff check
-        run: uv run ruff check src/ tests/
+        run: uv run ruff check src/ tests/ benchmarks/
 
       - name: Ruff format check
-        run: uv run ruff format --check src/ tests/
+        run: uv run ruff format --check src/ tests/ benchmarks/
 
       - name: Mypy
         run: uv run mypy src/
 
-      # Per-commit gate: the accumulated must-not-break suite (+ fast sanity).
-      # Empty until Sprint 2 ships, so `or sanity` keeps it from erroring on an
-      # empty selection and always runs the quick cross-module smoke.
-      - name: Regression + sanity (every push)
-        if: github.event_name == 'push'
-        run: uv run pytest -m "regression or sanity" --cov=swarm_mapping --cov-report=term-missing -v
+      # Both labels run on every push, as separate steps, so a red build says
+      # whether shipped behaviour broke (Regression) or in-flight work isn't
+      # done (Progression). Until Sprint 3 each gate ran only one label and no
+      # gate ever ran the whole suite — see docs/sprint-3-plan.md, Task 0.
+      - name: Regression — prior sprints, must not break
+        run: uv run pytest -m "regression and not acceptance" --cov=swarm_mapping --cov-report=term-missing -v
 
-      # PR-to-main gate: the current sprint's work (+ sanity).
-      - name: Progression + sanity (pull request)
+      # Exit code 5 is pytest's "no tests collected": a sprint that has not
+      # written its first test yet has an empty progression set, which is fine.
+      - name: Progression — current sprint, work in flight
+        run: uv run pytest -m "progression and not acceptance" --cov=swarm_mapping --cov-append --cov-report=term-missing -v || [ $? -eq 5 ]
+
+      # Full-scenario runs: minutes, not seconds. PRs to main only, per CLAUDE.md.
+      - name: Acceptance (pull request to main)
         if: github.event_name == 'pull_request'
-        run: uv run pytest -m "progression or sanity" --cov=swarm_mapping --cov-report=term-missing -v
+        run: uv run pytest -m acceptance -v

@@ -16,20 +16,28 @@ from swarm_mapping.simulation.types import Pose, RayHit
 # --- Sprint-derived test classification -------------------------------------
 #
 # Every test declares the sprint it was introduced in via
-# ``pytestmark = pytest.mark.sprint(N)`` at the top of its module. From that
-# single tag we derive two selectable groups, so promotion is automatic:
+# ``pytestmark = pytest.mark.sprint(N)`` at the top of its module (a class-level
+# marker overrides it — resolution is ``get_closest_marker``). From that single
+# tag we derive two labels, so promotion is automatic:
 #
-#   * regression  — tests from sprints BEFORE the current one. They guard
-#                   already-shipped behaviour and must not break (PR gate).
-#   * progression — tests from the CURRENT sprint; the work in flight
-#                   (per-commit gate).
+#   * regression  — tests from sprints BEFORE the current one: shipped
+#                   behaviour that must not break.
+#   * progression — tests from the CURRENT sprint: the work in flight.
 #
-# When a sprint closes, bump CURRENT_SPRINT by one: last sprint's progression
-# tests become regression with no re-tagging. ``sanity`` is an independent,
-# hand-curated marker for a small/fast health-check subset.
+# The labels say WHICH KIND of failure a red run is. They do not decide what
+# runs: CI runs both on every push, as separate steps, and adds the acceptance
+# suite on PRs to main. (Until Sprint 3 the gates each ran only one label, so no
+# gate ever ran the whole suite — see docs/sprint-3-plan.md, Task 0.)
+#
+# **Bump CURRENT_SPRINT at every sprint kickoff.** Last sprint's progression
+# tests become regression with no re-tagging. Forgetting it was silent until
+# Sprint 3 — 283 tests dropped out of every push — so a test tagged with a
+# sprint ahead of this value now fails collection instead.
+#
+# ``sanity`` is an independent, hand-curated marker for a small/fast subset.
 #
 # Run: ``pytest -m sanity`` / ``-m progression`` / ``-m regression``.
-CURRENT_SPRINT = 2
+CURRENT_SPRINT = 3
 
 
 def pytest_collection_modifyitems(
@@ -43,6 +51,14 @@ def pytest_collection_modifyitems(
             unmarked.append(item.nodeid)
             continue
         sprint = marker.args[0]
+        if sprint > CURRENT_SPRINT:
+            msg = (
+                f"{item.nodeid} is tagged sprint({sprint}) but CURRENT_SPRINT is "
+                f"{CURRENT_SPRINT}. Bump CURRENT_SPRINT in tests/conftest.py at "
+                "sprint kickoff — otherwise finished sprints' tests never "
+                "become regression."
+            )
+            raise pytest.UsageError(msg)
         if sprint < CURRENT_SPRINT:
             item.add_marker(pytest.mark.regression)
         else:
