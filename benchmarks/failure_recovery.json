@@ -1,0 +1,47 @@
+[
+  {
+    "scenario": "large_indoor",
+    "ticks": 894,
+    "t95": 517,
+    "coverage": 0.9737,
+    "blocked": true,
+    "tick_capped": false,
+    "wall_seconds": 126.3,
+    "injected_tick": null,
+    "declared_tick": null,
+    "health": null,
+    "latency_ticks": null,
+    "latency_seconds": null,
+    "kpi_met": null
+  },
+  {
+    "scenario": "failure_injection",
+    "ticks": 1289,
+    "t95": 579,
+    "coverage": 0.9737,
+    "blocked": true,
+    "tick_capped": false,
+    "wall_seconds": 182.8,
+    "injected_tick": 300,
+    "declared_tick": 302,
+    "health": "lost",
+    "latency_ticks": 2,
+    "latency_seconds": 0.4,
+    "kpi_met": true
+  },
+  {
+    "scenario": "failure_stuck",
+    "ticks": 1369,
+    "t95": 579,
+    "coverage": 0.9737,
+    "blocked": true,
+    "tick_capped": false,
+    "wall_seconds": 277.7,
+    "injected_tick": 300,
+    "declared_tick": 303,
+    "health": "stuck",
+    "latency_ticks": 3,
+    "latency_seconds": 0.6,
+    "kpi_met": true
+  }
+]
