@@ -354,6 +354,11 @@ class CentralizedMaster:
         station would see: silence, or commanded moves that did not happen. A
         LOST drone is no longer polled; a STUCK one still reports, and keeps
         being sensed.
+
+        Until it is declared, a silent drone is still ACTIVE: within the
+        ≤ `heartbeat_timeout_ticks` window, the assignment pass may hand it a
+        new claim if its target evaporates. That claim is released on
+        declaration like any other.
         """
         self._heard = []
         for drone_id in self._ordered_ids:
@@ -442,6 +447,10 @@ class CentralizedMaster:
         active = {
             d: s for d, s in self._states.items() if s.health is DroneHealth.ACTIVE
         }
+        # The overlay also reaches `frontier_cells(grid)` inside `assign_all`,
+        # the set a committed target must still be in to survive. That is
+        # benign: frontier cells under a wreck's footprint are unreachable
+        # anyway, so dropping them from the survival check loses nothing.
         assigned = assign_all(
             self._planning_grid(),
             frontiers,

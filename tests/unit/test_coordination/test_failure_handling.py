@@ -154,50 +154,97 @@ class TestStuck:
 class TestReclaim:
     """Plan tests 7-9: the failed drone's frontier, tasking and body."""
 
-    def test_the_released_frontier_is_not_orphaned(
+    def test_the_released_frontier_is_handed_out_on_the_declaring_tick(
         self, scene: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """A claim held by a dead drone would be unassignable forever.
+        """Plan test 7: released in `_observe`, re-assigned by that tick's `_assign`.
 
-        Drone 2 has right of way, so it claims first. After it is declared,
-        the frontier it held must either be picked up by a teammate or stop
-        being a frontier because a teammate mapped it.
+        Drone 1 has right of way and claims first. It is stuck from tick 0 and
+        declared on tick 3. On that same tick drone 0 is needy (its own target
+        evaporated as the map grew) and the nearest frontier for it is exactly
+        the one drone 1 held. The setup was found by searching start positions
+        in this room, not constructed through private state.
         """
         caplog.set_level(logging.INFO)
-        master, engine, mapper = build_master(
-            scene, {0: (-1.5, -1.5), 1: (1.5, -1.5), 2: (0.0, 1.5)}
-        )
-        engine.fail_drone(2, FailureMode.STUCK)
+        master, engine, _ = build_master(scene, {0: (2.0, -2.0), 1: (-2.0, 0.0)})
+        engine.fail_drone(1, FailureMode.STUCK)
+        claims_before: dict[int, Cell] = {}
         while not events(caplog, "drone_failed") and master.tick_count < 50:
+            claims_before = {
+                d: s.assignment.region.cell
+                for d, s in master.drone_states.items()
+                if s.assignment is not None
+            }
             master.tick()
         (failed,) = events(caplog, "drone_failed")
-        assert failed.drone_id == 2 and failed.health == "stuck"
+        assert failed.drone_id == 1 and failed.health == "stuck"
+        assert failed.tick == master.tick_count - 1  # the tick just run
         released = tuple(failed.released)
-        assert master.drone_states[2].assignment is None
 
-        taken_over = False
-        while not master.is_complete and master.tick_count < 600:
-            master.tick()
-            taken_over |= any(
-                s.assignment is not None and s.assignment.region.cell == released
-                for s in master.drone_states.values()
-            )
-        still_frontier = any(r.cell == released for r in mapper.get_frontiers())
-        assert taken_over or not still_frontier
+        # Going into the tick, the failed drone held it and nobody else did.
+        assert claims_before[1] == released
+        assert claims_before.get(0) != released
+        # On that same tick: the failed drone holds nothing, and the only
+        # holder of the released frontier is an ACTIVE teammate.
+        assert master.drone_states[1].assignment is None
+        holders = [
+            d
+            for d, s in master.drone_states.items()
+            if s.assignment is not None and s.assignment.region.cell == released
+        ]
+        assert holders == [0]
+        assert master.drone_states[0].health is DroneHealth.ACTIVE
 
-    def test_a_failed_drone_is_never_tasked_or_sent_home(self, scene: Path) -> None:
-        """No assignment and no homeward move, ever, once declared."""
-        master, engine, _ = build_master(
-            scene, {0: (-1.5, 0.0), 1: (1.5, 0.0)}, return_to_base_ticks=5
+    def test_a_failed_drone_is_never_tasked_or_sent_home(
+        self, scene: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """No assignment, no motion, and never counted idle, once declared.
+
+        A stuck drone cannot move, so "not sent home" is invisible in its
+        cell; the `returning_to_base` event is what shows it. At
+        `return_to_base_ticks=1` any idle ACTIVE drone away from home is sent
+        home on its first idle tick. The non-vacuity checks prove that: the
+        healthy teammate in this run is sent home, and in a healthy twin run
+        drone 1 itself is too.
+
+        Two mechanisms each keep a wreck from being sent home: the ACTIVE-only
+        guard in `_update_idle_drones`, and the overlay (a home route planned
+        from inside the wreck's own footprint does not exist). Measured by
+        mutation: this test fails only with both removed.
+        """
+        caplog.set_level(logging.INFO)
+        twin, _, _ = build_master(
+            scene, {0: (-1.5, 0.0), 1: (1.5, 0.0)}, return_to_base_ticks=1
         )
+        twin_home = twin.drone_states[1].cell
+        run_to_end(twin)
+        twin_homeward = {r.drone_id for r in events(caplog, "returning_to_base")}
+        assert 1 in twin_homeward, "a healthy drone 1 would have been sent home"
+        caplog.clear()
+
+        master, engine, _ = build_master(
+            scene, {0: (-1.5, 0.0), 1: (1.5, 0.0)}, return_to_base_ticks=1
+        )
+        # Fly a few ticks first so the wreck is away from home: a drone parked
+        # on its home cell is never sent home, which would make this vacuous.
+        run(master, 3)
         engine.fail_drone(1, FailureMode.STUCK)
-        run(master, 5)
+        caplog.clear()
+        run(master, 4)
         assert master.drone_states[1].health is DroneHealth.STUCK
         wreck = master.drone_states[1].cell
+        assert wreck != twin_home
         while not master.is_complete and master.tick_count < 600:
             master.tick()
             assert master.drone_states[1].assignment is None
             assert master.drone_states[1].cell == wreck
+        # Only what happens from the declaration on counts, including the rest
+        # of the declaring tick itself: that is when a missing guard would fire.
+        messages = [r.getMessage() for r in caplog.records]
+        after = caplog.records[messages.index("drone_failed") :]
+        homeward = [r.drone_id for r in after if r.getMessage() == "returning_to_base"]
+        assert 0 in homeward, "the idle teammate was not sent home: test is vacuous"
+        assert 1 not in homeward
 
     def test_teammates_keep_their_distance_from_the_wreck(self, scene: Path) -> None:
         """The wreck stays in resolve_moves as a static body."""
@@ -269,6 +316,32 @@ class TestLost:
         assert events(caplog, "drone_failed") == []
 
 
+# The 6 m room split north-south by a wall at x = 0, with one gap for
+# |y| < 1.0 m. A wreck in the gap leaves just enough room to pass beside it at
+# Chebyshev distance 3 (footprint k = 1 plus clearance r = 1), so the only way
+# east is the narrow side of the gap.
+CORRIDOR_XML = """\
+<mujoco model="coord_test_corridor">
+  <option timestep="0.01" gravity="0 0 -9.81"/>
+  <worldbody>
+    <geom name="floor" type="plane" size="3 3 0.05"/>
+    <geom name="wall_east" type="box" pos="3 0 1" size="0.1 3 1"/>
+    <geom name="wall_west" type="box" pos="-3 0 1" size="0.1 3 1"/>
+    <geom name="wall_north" type="box" pos="0 3 1" size="3 0.1 1"/>
+    <geom name="wall_south" type="box" pos="0 -3 1" size="3 0.1 1"/>
+    <geom name="split_north" type="box" pos="0 2 1" size="0.1 1 1"/>
+    <geom name="split_south" type="box" pos="0 -2 1" size="0.1 1 1"/>
+  </worldbody>
+</mujoco>
+"""
+
+# Measured on CORRIDOR_XML with the starts below: drone 0 changes target 4
+# times after the declaration and finishes on tick 26. The bound is twice
+# that. With the overlay disabled the same run never finishes: it hits the
+# 600-tick cap pressed against the wreck.
+MAX_TARGET_CHANGES = 8
+
+
 class TestWreck:
     """Plan tests 11-12: plan around wrecks, never map them (D4)."""
 
@@ -291,6 +364,44 @@ class TestWreck:
                 continue
             for col, row in assignment.path[master.drone_states[0].path_index :]:
                 assert max(abs(col - wc), abs(row - wr)) > 2
+
+    def test_a_wreck_in_the_corridor_is_passed_without_thrashing(
+        self, tmp_path: Path
+    ) -> None:
+        """Plan test 11: drone 0 gets through the gap beside the wreck.
+
+        Bounded target changes (see MAX_TARGET_CHANGES), no path within
+        Chebyshev 2 of the wreck, the mission finishes well inside the cap,
+        and drone 0 really crosses. Without the crossing the other checks
+        could pass by drone 0 never trying.
+        """
+        corridor = tmp_path / "corridor.xml"
+        corridor.write_text(CORRIDOR_XML)
+        master, engine, _ = build_master(corridor, {0: (-2.0, 0.0), 1: (0.0, -0.75)})
+        engine.fail_drone(1, FailureMode.STUCK)
+        run(master, 5)
+        assert master.drone_states[1].health is DroneHealth.STUCK
+        wc, wr = master.drone_states[1].cell
+
+        current = master.drone_states[0].assignment
+        target = current.region.cell if current is not None else None
+        changes = 0
+        crossed = False
+        while not master.is_complete and master.tick_count < 600:
+            master.tick()
+            state = master.drone_states[0]
+            crossed |= state.cell[0] > wc + 1
+            if state.assignment is None:
+                continue
+            if state.assignment.region.cell != target:
+                changes += 1
+                target = state.assignment.region.cell
+            for col, row in state.assignment.path[state.path_index :]:
+                assert max(abs(col - wc), abs(row - wr)) > 2
+
+        assert master.is_complete, "hit the tick cap: drone 0 thrashed at the wreck"
+        assert crossed, "drone 0 never got past the wreck: test is vacuous"
+        assert changes <= MAX_TARGET_CHANGES
 
     def test_the_wreck_never_reaches_the_map(self, scene: Path) -> None:
         """The overlay is planning-only: the exported map must not show the wreck."""
